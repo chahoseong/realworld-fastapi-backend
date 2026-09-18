@@ -3,6 +3,17 @@
 # dependencies
 /node_modules
 /dist
+/.venv
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Local environment
+.env
+.env.*
+!.env.example
 
 # IDEs and editors
 /.idea
