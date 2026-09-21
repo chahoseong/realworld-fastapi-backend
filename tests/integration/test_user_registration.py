@@ -1,9 +1,15 @@
 from uuid import uuid4
 
+import jwt
 import pytest
 from fastapi import status
 from fastapi.testclient import TestClient
 from httpx2 import Response
+from sqlalchemy import select
+from sqlalchemy.orm import Session, sessionmaker
+
+from app.security import JWT_ALGORITHM, verify_password
+from app.users.models import User
 
 REGISTER_USER_PATH = "/api/users"
 
@@ -193,3 +199,130 @@ def test_register_user_normalizes_email(
     # Assert
     assert response.status_code == status.HTTP_201_CREATED
     assert response.json()["user"]["email"] == expected_email
+
+
+def test_register_user_persists_user_in_database(
+    client: TestClient,
+    test_session_factory: sessionmaker[Session],
+) -> None:
+    """등록 요청이 끝난 후 사용자 정보가 데이터베이스에 저장되어 있어야 한다."""
+    # Arrange
+    request_payload = _registration_payload()
+    expected_user = request_payload["user"]
+
+    # Act
+    response = client.post(REGISTER_USER_PATH, json=request_payload)
+
+    # Assert
+    assert response.status_code == status.HTTP_201_CREATED
+    with test_session_factory() as session:
+        stored_user = session.scalar(
+            select(User).where(User.email == expected_user["email"])
+        )
+
+    assert stored_user is not None
+    assert stored_user.username == expected_user["username"]
+    assert stored_user.email == expected_user["email"]
+    assert stored_user.bio is None
+    assert stored_user.image is None
+
+
+def test_registering_users_with_same_password_stores_different_hashes(
+    client: TestClient,
+    test_session_factory: sessionmaker[Session],
+) -> None:
+    """같은 비밀번호로 사용자를 등록해도 서로 다른 해시가 저장되어야 한다."""
+    # Arrange
+    password = "shared-password"
+    first_payload = _registration_payload(password=password)
+    second_payload = _registration_payload(password=password)
+
+    # Act
+    first_response = client.post(REGISTER_USER_PATH, json=first_payload)
+    second_response = client.post(REGISTER_USER_PATH, json=second_payload)
+
+    # Assert
+    assert first_response.status_code == status.HTTP_201_CREATED
+    assert second_response.status_code == status.HTTP_201_CREATED
+    with test_session_factory() as session:
+        first_user = session.scalar(
+            select(User).where(User.email == first_payload["user"]["email"])
+        )
+        second_user = session.scalar(
+            select(User).where(User.email == second_payload["user"]["email"])
+        )
+
+    assert first_user is not None
+    assert second_user is not None
+    assert first_user.password_hash != second_user.password_hash
+
+
+def test_register_user_stores_verifiable_password_hash(
+    client: TestClient,
+    test_session_factory: sessionmaker[Session],
+) -> None:
+    """등록한 비밀번호는 원문이 아닌 검증 가능한 해시로 저장되어야 한다."""
+    # Arrange
+    password = "password-to-verify"
+    request_payload = _registration_payload(password=password)
+
+    # Act
+    response = client.post(REGISTER_USER_PATH, json=request_payload)
+
+    # Assert
+    assert response.status_code == status.HTTP_201_CREATED
+    with test_session_factory() as session:
+        stored_user = session.scalar(
+            select(User).where(User.email == request_payload["user"]["email"])
+        )
+
+    assert stored_user is not None
+    assert stored_user.password_hash != password
+    assert verify_password(password, stored_user.password_hash)
+    assert not verify_password("different-password", stored_user.password_hash)
+
+
+def test_register_user_does_not_expose_password_fields(
+    client: TestClient,
+) -> None:
+    """등록 응답에 평문 비밀번호와 비밀번호 해시를 포함하지 않아야 한다."""
+    # Arrange
+    request_payload = _registration_payload()
+
+    # Act
+    response = client.post(REGISTER_USER_PATH, json=request_payload)
+
+    # Assert
+    assert response.status_code == status.HTTP_201_CREATED
+    response_user = response.json()["user"]
+    assert "password" not in response_user
+    assert "password_hash" not in response_user
+
+
+def test_register_user_returns_token_with_created_user_id_as_subject(
+    client: TestClient,
+    test_session_factory: sessionmaker[Session],
+    test_jwt_secret_key: str,
+) -> None:
+    """등록 응답의 JWT가 데이터베이스에 저장된 사용자 ID를 식별해야 한다."""
+    # Arrange
+    request_payload = _registration_payload()
+
+    # Act
+    response = client.post(REGISTER_USER_PATH, json=request_payload)
+
+    # Assert
+    assert response.status_code == status.HTTP_201_CREATED
+    token = response.json()["user"]["token"]
+    claims = jwt.decode(
+        token,
+        test_jwt_secret_key,
+        algorithms=[JWT_ALGORITHM],
+    )
+    with test_session_factory() as session:
+        stored_user = session.scalar(
+            select(User).where(User.email == request_payload["user"]["email"])
+        )
+
+    assert stored_user is not None
+    assert claims["sub"] == str(stored_user.id)

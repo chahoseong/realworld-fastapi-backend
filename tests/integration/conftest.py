@@ -12,11 +12,14 @@ from sqlalchemy import Engine, create_engine
 from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session, sessionmaker
 
+from app.config import get_settings
 from app.database import get_session
 from app.main import app
 
 if TYPE_CHECKING:
     from fastapi.testclient import TestClient
+
+TEST_JWT_SECRET_KEY = "integration-test-jwt-secret-key-at-least-32-bytes"
 
 
 class TestSettings(BaseSettings):
@@ -66,7 +69,28 @@ def test_session_factory(
 
 
 @pytest.fixture
+def test_jwt_secret_key() -> str:
+    return TEST_JWT_SECRET_KEY
+
+
+@pytest.fixture
+def configure_test_app_settings(
+    monkeypatch: pytest.MonkeyPatch,
+    test_database_url: str,
+    test_jwt_secret_key: str,
+) -> Generator[None]:
+    monkeypatch.setenv("DATABASE_URL", test_database_url)
+    monkeypatch.setenv("JWT_SECRET_KEY", test_jwt_secret_key)
+    get_settings.cache_clear()
+    try:
+        yield
+    finally:
+        get_settings.cache_clear()
+
+
+@pytest.fixture
 def client(
+    configure_test_app_settings: None,
     test_session_factory: sessionmaker[Session],
 ) -> Generator[TestClient]:
     from fastapi.testclient import TestClient
