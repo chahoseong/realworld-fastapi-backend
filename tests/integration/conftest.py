@@ -89,19 +89,36 @@ def configure_test_app_settings(
 
 
 @pytest.fixture
-def client(
+def override_app_session(
     configure_test_app_settings: None,
     test_session_factory: sessionmaker[Session],
-) -> Generator[TestClient]:
-    from fastapi.testclient import TestClient
-
+) -> Generator[None]:
     def override_get_session() -> Generator[Session]:
         with test_session_factory() as session:
             yield session
 
     app.dependency_overrides[get_session] = override_get_session
     try:
-        with TestClient(app) as test_client:
-            yield test_client
+        yield
     finally:
         app.dependency_overrides.clear()
+
+
+@pytest.fixture
+def client(
+    override_app_session: None,
+) -> Generator[TestClient]:
+    from fastapi.testclient import TestClient
+
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+@pytest.fixture
+def server_error_client(
+    override_app_session: None,
+) -> Generator[TestClient]:
+    from fastapi.testclient import TestClient
+
+    with TestClient(app, raise_server_exceptions=False) as test_client:
+        yield test_client

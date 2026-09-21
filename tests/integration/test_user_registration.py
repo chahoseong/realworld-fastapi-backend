@@ -5,7 +5,7 @@ import pytest
 from fastapi import status
 from fastapi.testclient import TestClient
 from httpx2 import Response
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.security import JWT_ALGORITHM, verify_password
@@ -46,6 +46,25 @@ def _assert_validation_error_response(response: Response) -> dict[str, list[str]
         for messages in errors.values()
     )
     return errors
+
+
+def _user_count(session: Session) -> int:
+    count = session.scalar(select(func.count()).select_from(User))
+    assert count is not None
+    return count
+
+
+def _user_state(
+    user: User,
+) -> tuple[int, str, str, str, str | None, str | None]:
+    return (
+        user.id,
+        user.username,
+        user.email,
+        user.password_hash,
+        user.bio,
+        user.image,
+    )
 
 
 def test_register_user_without_body_returns_422_errors(
@@ -326,3 +345,159 @@ def test_register_user_returns_token_with_created_user_id_as_subject(
 
     assert stored_user is not None
     assert claims["sub"] == str(stored_user.id)
+
+
+def test_register_user_without_password_does_not_change_database(
+    client: TestClient,
+    test_session_factory: sessionmaker[Session],
+) -> None:
+    """password가 누락된 요청은 사용자 데이터베이스를 변경하지 않아야 한다."""
+    # Arrange
+    existing_payload = _registration_payload()
+    invalid_payload = _registration_payload()
+    invalid_payload["user"].pop("password")
+    existing_response = client.post(REGISTER_USER_PATH, json=existing_payload)
+    assert existing_response.status_code == status.HTTP_201_CREATED
+
+    with test_session_factory() as session:
+        existing_user = session.scalar(
+            select(User).where(User.email == existing_payload["user"]["email"])
+        )
+        assert existing_user is not None
+        user_count_before = _user_count(session)
+        existing_user_state_before = _user_state(existing_user)
+
+    # Act
+    response = client.post(REGISTER_USER_PATH, json=invalid_payload)
+
+    # Assert
+    assert response.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+    with test_session_factory() as session:
+        existing_user_after = session.get(User, existing_user_state_before[0])
+        invalid_user = session.scalar(
+            select(User).where(User.email == invalid_payload["user"]["email"])
+        )
+        user_count_after = _user_count(session)
+
+    assert existing_user_after is not None
+    assert _user_state(existing_user_after) == existing_user_state_before
+    assert invalid_user is None
+    assert user_count_after == user_count_before
+
+
+@pytest.mark.parametrize("duplicate_field", ["username", "email"])
+def test_register_user_with_duplicate_username_or_email_does_not_change_database(
+    client: TestClient,
+    test_session_factory: sessionmaker[Session],
+    duplicate_field: str,
+) -> None:
+    """username이나 email 중복 요청은 사용자 데이터베이스를 변경하지 않아야 한다."""
+    # Arrange
+    existing_payload = _registration_payload()
+    duplicate_payload = _registration_payload(password="different-password")
+    duplicate_payload["user"][duplicate_field] = existing_payload["user"][
+        duplicate_field
+    ]
+    existing_response = client.post(REGISTER_USER_PATH, json=existing_payload)
+    assert existing_response.status_code == status.HTTP_201_CREATED
+
+    with test_session_factory() as session:
+        existing_user = session.scalar(
+            select(User).where(User.email == existing_payload["user"]["email"])
+        )
+        assert existing_user is not None
+        user_count_before = _user_count(session)
+        existing_user_state_before = _user_state(existing_user)
+
+    # Act
+    response = client.post(REGISTER_USER_PATH, json=duplicate_payload)
+
+    # Assert
+    assert response.status_code == status.HTTP_409_CONFLICT
+    with test_session_factory() as session:
+        existing_user_after = session.get(User, existing_user_state_before[0])
+        user_count_after = _user_count(session)
+        if duplicate_field == "username":
+            unexpected_user = session.scalar(
+                select(User).where(
+                    User.email == duplicate_payload["user"]["email"]
+                )
+            )
+        else:
+            unexpected_user = session.scalar(
+                select(User).where(
+                    User.username == duplicate_payload["user"]["username"]
+                )
+            )
+
+    assert existing_user_after is not None
+    assert _user_state(existing_user_after) == existing_user_state_before
+    assert unexpected_user is None
+    assert user_count_after == user_count_before
+
+
+def test_register_user_returns_500_without_persisting_user_when_database_write_fails(
+    server_error_client: TestClient,
+    test_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """데이터베이스 쓰기 실패를 성공으로 응답하거나 사용자를 남기지 않아야 한다."""
+    # Arrange
+    request_payload = _registration_payload()
+    with test_session_factory() as session:
+        user_count_before = _user_count(session)
+
+    # Act
+    with monkeypatch.context() as patch:
+        patch.setattr("app.users.router.hash_password", lambda _: None)
+        response = server_error_client.post(
+            REGISTER_USER_PATH,
+            json=request_payload,
+        )
+
+    # Assert
+    assert response.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
+    with test_session_factory() as session:
+        persisted_user = session.scalar(
+            select(User).where(User.email == request_payload["user"]["email"])
+        )
+        user_count_after = _user_count(session)
+
+    assert persisted_user is None
+    assert user_count_after == user_count_before
+
+
+def test_register_user_succeeds_after_previous_database_write_failure(
+    server_error_client: TestClient,
+    test_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """이전 데이터베이스 쓰기 실패가 해소되면 후속 가입 요청은 성공해야 한다."""
+    # Arrange
+    request_payload = _registration_payload()
+    with test_session_factory() as session:
+        user_count_before = _user_count(session)
+
+    # Act
+    with monkeypatch.context() as patch:
+        patch.setattr("app.users.router.hash_password", lambda _: None)
+        failed_response = server_error_client.post(
+            REGISTER_USER_PATH,
+            json=request_payload,
+        )
+    successful_response = server_error_client.post(
+        REGISTER_USER_PATH,
+        json=request_payload,
+    )
+
+    # Assert
+    assert failed_response.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
+    assert successful_response.status_code == status.HTTP_201_CREATED
+    with test_session_factory() as session:
+        persisted_users = session.scalars(
+            select(User).where(User.email == request_payload["user"]["email"])
+        ).all()
+        user_count_after = _user_count(session)
+
+    assert len(persisted_users) == 1
+    assert user_count_after == user_count_before + 1
