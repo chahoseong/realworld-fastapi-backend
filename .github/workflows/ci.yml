@@ -48,3 +48,98 @@ jobs:
       - name: Stop test database
         if: always() && steps.test-db.outcome != 'skipped'
         run: docker compose --profile test stop test-db
+
+  hurl:
+    name: hurl
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      DATABASE_URL: postgresql+psycopg://realworld_test:realworld_test@127.0.0.1:5433/realworld_test
+      JWT_SECRET_KEY: ci-only-jwt-secret-key-at-least-32-bytes
+      API_ORIGIN: http://127.0.0.1:8000
+      HURL_UID: ci-${{ github.run_id }}-${{ github.run_attempt }}
+      HURL_VERSION: "8.0.1"
+      HURL_SHA256: cac7c4670d69444db120edb21fe06c97ba8c80dcc52279957c8dd18f05fb0c06
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.12.17"
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Install Hurl
+        run: |
+          archive="$RUNNER_TEMP/hurl.tar.gz"
+          hurl_directory="$RUNNER_TEMP/hurl-$HURL_VERSION-x86_64-unknown-linux-gnu"
+          curl --fail --location --silent --show-error \
+            "https://github.com/Orange-OpenSource/hurl/releases/download/$HURL_VERSION/hurl-$HURL_VERSION-x86_64-unknown-linux-gnu.tar.gz" \
+            --output "$archive"
+          echo "$HURL_SHA256  $archive" | sha256sum --check -
+          tar --extract --gzip --file "$archive" --directory "$RUNNER_TEMP"
+          echo "$hurl_directory/bin" >> "$GITHUB_PATH"
+          "$hurl_directory/bin/hurl" --version
+
+      - name: Start test database
+        id: test-db
+        run: docker compose --profile test up -d --wait test-db
+
+      - name: Apply migrations
+        run: uv run alembic upgrade head
+
+      - name: Start API
+        id: api
+        run: |
+          nohup uv run fastapi run --host 127.0.0.1 --port 8000 > "$RUNNER_TEMP/api.log" 2>&1 &
+          echo "$!" > "$RUNNER_TEMP/api.pid"
+
+      - name: Wait for API
+        run: |
+          curl --fail --silent --show-error \
+            --retry 30 --retry-delay 1 --retry-connrefused \
+            "$API_ORIGIN/openapi.json" > /dev/null
+
+      - name: Run registration contract
+        run: |
+          hurl --test --jobs 1 --no-cookie-store \
+            --variable "host=$API_ORIGIN" \
+            --variable "uid=$HURL_UID" \
+            --to-entry 1 \
+            tests/api/hurl/auth.hurl
+
+      - name: Run registration error contract
+        run: |
+          hurl --test --jobs 1 --no-cookie-store \
+            --variable "host=$API_ORIGIN" \
+            --variable "uid=$HURL_UID" \
+            --to-entry 6 \
+            tests/api/hurl/errors_auth.hurl
+
+      - name: Show API logs
+        if: failure() && steps.api.outcome != 'skipped'
+        run: cat "$RUNNER_TEMP/api.log"
+
+      - name: Show test database logs
+        if: failure() && steps.test-db.outcome != 'skipped'
+        run: docker compose --profile test logs test-db
+
+      - name: Stop API
+        if: always() && steps.api.outcome != 'skipped'
+        run: |
+          if [[ -f "$RUNNER_TEMP/api.pid" ]]; then
+            kill "$(cat "$RUNNER_TEMP/api.pid")" 2>/dev/null || true
+          fi
+
+      - name: Stop test database
+        if: always() && steps.test-db.outcome != 'skipped'
+        run: docker compose --profile test stop test-db
