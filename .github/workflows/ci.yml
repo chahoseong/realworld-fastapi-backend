@@ -57,6 +57,7 @@ jobs:
         with:
           version: "0.12.17"
           enable-cache: true
+          save-cache: false
 
       - name: Set up Python
         run: uv python install
@@ -101,6 +102,7 @@ jobs:
         with:
           version: "0.12.17"
           enable-cache: true
+          save-cache: false
 
       - name: Set up Python
         run: uv python install
