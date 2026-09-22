@@ -39,6 +39,7 @@ select = ["E4", "E7", "E9", "F", "I"]
 files = ["app", "tests"]
 python_version = "3.14"
 check_untyped_defs = true
+plugins = ["pydantic.mypy"]
 
 [[tool.mypy.overrides]]
 module = ["app", "app.*"]
