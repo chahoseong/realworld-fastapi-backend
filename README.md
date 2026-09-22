@@ -40,19 +40,19 @@ JWT_SECRET_KEY=Secret used to sign and verify JWTs; use at least 32 random bytes
 
 ## Run the application
 
-Start PostgreSQL:
+**Start PostgreSQL:**
 
 ```bash
 docker compose up -d --wait db
 ```
 
-Apply migrations:
+**Apply migrations:**
 
 ```bash
 uv run alembic upgrade head
 ```
 
-Run the API:
+**Run the API:**
 
 ```bash
 uv run fastapi dev
@@ -60,7 +60,7 @@ uv run fastapi dev
 
 - The API is available at `http://127.0.0.1:8000`, and the OpenAPI documentation is available at `http://127.0.0.1:8000/docs`.
 
-Stop the application and environment:
+**Stop the application and environment:**
 
 - API: Press `Ctrl+C` in the terminal.
 - PostgreSQL:
@@ -73,13 +73,13 @@ Stop the application and environment:
 
 ## Integration tests
 
-Start the isolated PostgreSQL test database:
+**Start the isolated PostgreSQL test database:**
 
 ```bash
 docker compose --profile test up -d --wait test-db
 ```
 
-Run the integration tests:
+**Run the integration tests:**
 
 ```bash
 uv run pytest tests/integration
@@ -87,7 +87,7 @@ uv run pytest tests/integration
 
 - The test setup verifies that `TEST_DATABASE_URL` targets the `realworld_test` database and applies migrations automatically.
 
-Stop the test database:
+**Stop the test database:**
 
 ```bash
 docker compose --profile test stop test-db
