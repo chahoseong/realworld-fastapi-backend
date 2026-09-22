@@ -419,9 +419,7 @@ def test_register_user_with_duplicate_username_or_email_does_not_change_database
         user_count_after = _user_count(session)
         if duplicate_field == "username":
             unexpected_user = session.scalar(
-                select(User).where(
-                    User.email == duplicate_payload["user"]["email"]
-                )
+                select(User).where(User.email == duplicate_payload["user"]["email"])
             )
         else:
             unexpected_user = session.scalar(
