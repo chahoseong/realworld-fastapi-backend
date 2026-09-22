@@ -19,11 +19,30 @@ dependencies = [
 [dependency-groups]
 dev = [
     "httpx2>=2.13.0",
+    "mypy>=2.3.1",
     "pytest>=9.1.1",
+    "ruff>=0.16.8",
 ]
 
 [tool.fastapi]
 entrypoint = "app.main:app"
+
+[tool.ruff]
+target-version = "py314"
+include = ["*.py", "*.pyi"]
+extend-exclude = [".agents"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I"]
+
+[tool.mypy]
+files = ["app", "tests"]
+python_version = "3.14"
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = ["app", "app.*"]
+strict = true
 
 [tool.pytest.ini_options]
 addopts = ["--import-mode=importlib"]
