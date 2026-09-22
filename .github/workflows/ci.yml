@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  pytest:
+    name: pytest
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    env:
+      TEST_DATABASE_URL: postgresql+psycopg://realworld_test:realworld_test@127.0.0.1:5433/realworld_test
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.12.17"
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install
+
+      - name: Install dependencies
+        run: uv sync --locked
+
+      - name: Start test database
+        id: test-db
+        run: docker compose --profile test up -d --wait test-db
+
+      - name: Run tests
+        run: uv run pytest
+
+      - name: Show test database logs
+        if: failure() && steps.test-db.outcome != 'skipped'
+        run: docker compose --profile test logs test-db
+
+      - name: Stop test database
+        if: always() && steps.test-db.outcome != 'skipped'
+        run: docker compose --profile test stop test-db
