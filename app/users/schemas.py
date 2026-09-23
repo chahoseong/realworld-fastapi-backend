@@ -1,11 +1,17 @@
-from pydantic import BaseModel, EmailStr, field_validator
+from __future__ import annotations
+
+from typing import Annotated
+
+from pydantic import BaseModel, EmailStr, Field, field_validator, model_validator
 from pydantic_core import PydanticCustomError
+
+Password = Annotated[str, Field(min_length=8)]
 
 
 class NewUser(BaseModel):
     username: str
     email: EmailStr
-    password: str
+    password: Password
 
     @field_validator("username", "email", "password", mode="before")
     @classmethod
@@ -17,6 +23,38 @@ class NewUser(BaseModel):
 
 class NewUserRequest(BaseModel):
     user: NewUser
+
+
+class UpdateUser(BaseModel):
+    username: str | None = None
+    email: EmailStr | None = None
+    password: Password | None = None
+    bio: str | None = None
+    image: str | None = None
+
+    @field_validator("username", "email", "password", mode="before")
+    @classmethod
+    def reject_null_or_blank_string(cls, value: object) -> object:
+        if value is None:
+            raise PydanticCustomError("null", "can't be null")
+        if isinstance(value, str) and value.strip() == "":
+            raise PydanticCustomError("blank", "can't be blank")
+        return value
+
+    @field_validator("bio", "image", mode="before")
+    @classmethod
+    def normalize_empty_string(cls, value: object) -> object:
+        return None if value == "" else value
+
+    @model_validator(mode="after")
+    def require_field(self) -> UpdateUser:
+        if not self.model_fields_set:
+            raise ValueError("at least one field is required")
+        return self
+
+
+class UpdateUserRequest(BaseModel):
+    user: UpdateUser
 
 
 class LoginUser(BaseModel):

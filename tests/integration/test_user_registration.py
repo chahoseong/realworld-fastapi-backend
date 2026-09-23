@@ -172,18 +172,53 @@ def test_register_user_with_whitespace_only_field_returns_blank_error(
     assert errors[field] == ["can't be blank"]
 
 
-def test_register_user_with_short_password_returns_201(
+def test_register_user_with_short_password_does_not_create_account(
     client: TestClient,
+    test_session_factory: sessionmaker[Session],
 ) -> None:
-    """비어 있지 않은 짧은 password에 별도 길이 정책을 적용하지 않아야 한다."""
+    """8자 미만 비밀번호로 가입하면 422를 반환하고 계정을 남기지 않아야 한다."""
     # Arrange
-    request_payload = _registration_payload(password="x")
+    request_payload = _registration_payload(password="a" * 7)
+    with test_session_factory() as session:
+        user_count_before = _user_count(session)
+
+    # Act
+    response = client.post(REGISTER_USER_PATH, json=request_payload)
+
+    # Assert
+    errors = _assert_validation_error_response(response)
+    assert "password" in errors
+    with test_session_factory() as session:
+        stored_user = session.scalar(
+            select(User).where(User.email == request_payload["user"]["email"])
+        )
+        user_count_after = _user_count(session)
+    assert stored_user is None
+    assert user_count_after == user_count_before
+
+
+@pytest.mark.parametrize("length", [8, 64])
+def test_register_user_accepts_password_policy_boundaries(
+    client: TestClient,
+    test_session_factory: sessionmaker[Session],
+    length: int,
+) -> None:
+    """단순한 8자·64자 비밀번호로 가입하고 저장된 해시로 검증할 수 있어야 한다."""
+    # Arrange
+    password = "a" * length
+    request_payload = _registration_payload(password=password)
 
     # Act
     response = client.post(REGISTER_USER_PATH, json=request_payload)
 
     # Assert
     assert response.status_code == status.HTTP_201_CREATED
+    with test_session_factory() as session:
+        stored_user = session.scalar(
+            select(User).where(User.email == request_payload["user"]["email"])
+        )
+    assert stored_user is not None
+    assert verify_password(password, stored_user.password_hash)
 
 
 def test_register_user_does_not_trim_username(

@@ -11,6 +11,7 @@ from app.users.models import User
 from app.users.schemas import (
     LoginUserRequest,
     NewUserRequest,
+    UpdateUserRequest,
     UserPayload,
     UserResponse,
 )
@@ -87,6 +88,64 @@ def login_user(request: LoginUserRequest, session: SessionDep) -> UserResponse:
 @router.get("/user")
 def get_current_user(current_user: CurrentUserDep) -> UserResponse:
     user, token = current_user
+    return UserResponse(
+        user=UserPayload(
+            username=user.username,
+            email=user.email,
+            token=token,
+            bio=user.bio,
+            image=user.image,
+        )
+    )
+
+
+@router.put("/user")
+def update_current_user(
+    request: UpdateUserRequest,
+    current_user: CurrentUserDep,
+    session: SessionDep,
+) -> UserResponse:
+    user, token = current_user
+    changes = request.user.model_fields_set
+
+    try:
+        if "username" in changes:
+            assert request.user.username is not None
+            user.username = request.user.username
+        if "email" in changes:
+            assert request.user.email is not None
+            user.email = request.user.email
+        if "password" in changes:
+            assert request.user.password is not None
+            user.password_hash = hash_password(request.user.password)
+        if "bio" in changes:
+            user.bio = request.user.bio
+        if "image" in changes:
+            user.image = request.user.image
+
+        session.commit()
+    except IntegrityError as exception:
+        session.rollback()
+        constraint_name = getattr(
+            getattr(exception.orig, "diag", None),
+            "constraint_name",
+            None,
+        )
+        if constraint_name == "uq_users_username":
+            raise ApiError(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                {"username": ["has already been taken"]},
+            ) from exception
+        if constraint_name == "uq_users_email":
+            raise ApiError(
+                status.HTTP_422_UNPROCESSABLE_CONTENT,
+                {"email": ["has already been taken"]},
+            ) from exception
+        raise
+    except Exception:
+        session.rollback()
+        raise
+
     return UserResponse(
         user=UserPayload(
             username=user.username,
