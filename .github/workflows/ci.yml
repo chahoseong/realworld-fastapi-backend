@@ -155,6 +155,22 @@ jobs:
             --variable "uid=$HURL_UID" \
             tests/api/hurl/errors_auth.hurl
 
+      - name: Run profile read contract
+        run: |
+          hurl --test --jobs 1 --no-cookie-store \
+            --variable "host=$API_ORIGIN" \
+            --variable "uid=$HURL_UID" \
+            --to-entry 4 \
+            tests/api/hurl/profiles.hurl
+
+      - name: Run profile not-found contract
+        run: |
+          hurl --test --jobs 1 --no-cookie-store \
+            --variable "host=$API_ORIGIN" \
+            --variable "uid=$HURL_UID" \
+            --to-entry 1 \
+            tests/api/hurl/errors_profiles.hurl
+
       - name: Show API logs
         if: failure() && steps.api.outcome != 'skipped'
         run: cat "$RUNNER_TEMP/api.log"
