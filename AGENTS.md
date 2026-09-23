@@ -42,7 +42,7 @@ Full Suite
 tests/
 ├── unit/
 ├── integration/
-├── api/
+├── api/            # hurl
 ```
 
 ### Running Tests
