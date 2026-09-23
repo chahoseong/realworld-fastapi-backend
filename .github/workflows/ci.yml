@@ -141,20 +141,18 @@ jobs:
             --retry 30 --retry-delay 1 --retry-connrefused \
             "$API_ORIGIN/openapi.json" > /dev/null
 
-      - name: Run registration, login, and current user contract
+      - name: Run user contract
         run: |
           hurl --test --jobs 1 --no-cookie-store \
             --variable "host=$API_ORIGIN" \
             --variable "uid=$HURL_UID" \
-            --to-entry 3 \
             tests/api/hurl/auth.hurl
 
-      - name: Run authentication error contract
+      - name: Run user error contract
         run: |
           hurl --test --jobs 1 --no-cookie-store \
             --variable "host=$API_ORIGIN" \
             --variable "uid=$HURL_UID" \
-            --to-entry 10 \
             tests/api/hurl/errors_auth.hurl
 
       - name: Show API logs
