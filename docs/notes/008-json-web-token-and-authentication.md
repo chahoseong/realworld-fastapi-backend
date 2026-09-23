@@ -48,15 +48,17 @@ Payload가 변경되면 서명이 일치하지 않는다. 비밀키를 모르는
 
 ## Claim과 사용자 식별
 
-Claim은 JWT Payload에 담는 정보다. 현재 프로젝트는 `sub` Claim에 사용자 ID를 문자열로 저장한다.
+Claim은 JWT Payload에 담는 정보다. 현재 프로젝트는 `sub`에 사용자 ID를 문자열로, `iat`에 발급 시각을, `exp`에 만료 시각을 담는다.
 
 ```json
 {
-  "sub": "42"
+  "sub": "42",
+  "iat": 1700000000,
+  "exp": 1700003600
 }
 ```
 
-`sub`는 subject의 약자로 토큰이 나타내는 대상을 식별한다. 서버는 서명을 검증한 뒤 `sub`를 읽어 데이터베이스에서 사용자를 조회할 수 있다.
+위 시각 값은 예시다. `sub`는 subject의 약자로 토큰이 나타내는 대상을 식별한다. 서버는 서명을 검증한 뒤 `sub`를 읽어 데이터베이스에서 사용자를 조회할 수 있다.
 
 JWT에서 자주 사용하는 다른 Claim에는 다음이 있다.
 
@@ -65,7 +67,7 @@ JWT에서 자주 사용하는 다른 Claim에는 다음이 있다.
 - `iss`: 토큰 발급자
 - `aud`: 토큰을 사용할 대상
 
-현재 프로젝트의 토큰에는 `sub`만 있고 `iat`와 `exp`는 없다. 만료 정책이 필요해지면 토큰 발급과 검증 양쪽에서 함께 설계해야 한다.
+`exp`는 토큰의 만료 시각을 정의하며, 해당 시각부터 토큰을 수락하지 않는다는 뜻이다.
 
 ## 회원가입에서의 흐름
 
@@ -81,7 +83,7 @@ sequenceDiagram
     API->>API: 비밀번호 해시 생성
     API->>DB: 사용자 저장
     DB-->>API: 생성된 사용자 ID
-    API->>API: sub에 사용자 ID를 담아 JWT 서명
+    API->>API: sub·iat·exp를 담아 JWT 서명
     API-->>Client: 사용자 정보와 JWT 반환
 ```
 
@@ -101,7 +103,7 @@ sequenceDiagram
     API->>DB: email로 사용자 조회
     DB-->>API: 사용자와 password hash
     API->>API: 요청 비밀번호와 저장된 hash 검증
-    API->>API: sub에 사용자 ID를 담아 JWT 서명
+    API->>API: sub·iat·exp를 담아 JWT 서명
     API-->>Client: 사용자 정보와 JWT 반환
 ```
 
@@ -115,7 +117,7 @@ sequenceDiagram
 Authorization: Token <JWT>
 ```
 
-서버는 토큰을 디코딩하면서 서명을 검증하고, 검증된 Payload의 `sub`로 현재 사용자를 조회한다.
+서버는 토큰의 서명과 `exp`의 존재·만료 여부를 검증하고, `sub`를 사용자 ID로 해석해 데이터베이스에서 현재 사용자를 조회한다.
 
 ```mermaid
 sequenceDiagram
@@ -124,28 +126,26 @@ sequenceDiagram
     participant DB as PostgreSQL
 
     Client->>API: Authorization Header에 JWT 전달
-    API->>API: JWT 서명과 Claim 검증
+    API->>API: JWT 서명과 exp 검증
     API->>DB: sub의 사용자 ID로 조회
     DB-->>API: 현재 사용자
     API->>API: 사용자 권한으로 요청 처리
     API-->>Client: 처리 결과
 ```
 
-서명 검증에 실패하거나 사용자를 찾지 못하면 인증된 요청으로 처리하지 않는다. JWT는 사용자 조회를 완전히 없애는 장치가 아니라, 요청과 사용자 ID를 신뢰할 수 있게 연결하는 수단으로 사용할 수 있다.
+서명 검증에 실패하거나 토큰이 만료되었거나 사용자를 찾지 못하면 인증된 요청으로 처리하지 않는다. `GET /api/user`는 요청에 사용한 유효 토큰을 그대로 반환하므로 조회로 만료 시각을 연장하지 않는다. JWT는 사용자 조회를 완전히 없애는 장치가 아니라, 요청과 사용자 ID를 신뢰할 수 있게 연결하는 수단으로 사용할 수 있다.
 
 ## 현재 프로젝트의 구현 범위
 
-현재 회원가입 endpoint는 사용자를 저장한 뒤 [`create_access_token`](../../app/security.py)으로 JWT를 생성하고 응답의 `user.token`에 포함한다. 토큰 생성에는 환경 변수로 제공된 `JWT_SECRET_KEY`와 `HS256` 알고리즘을 사용한다.
+회원가입과 로그인 endpoint는 각각 사용자를 저장하거나 비밀번호를 검증한 뒤 [`create_access_token`](../../app/security.py)으로 JWT를 생성하고 응답의 `user.token`에 포함한다. 토큰 생성에는 환경 변수로 제공된 `JWT_SECRET_KEY`와 `HS256` 알고리즘을 사용한다.
 
-[`decode_access_token`](../../app/security.py)은 토큰의 서명을 검증하고 Payload를 읽을 수 있도록 준비되어 있다. 그러나 현재는 로그인 endpoint와 인증 Header에서 토큰을 읽어 현재 사용자를 제공하는 처리가 아직 연결되어 있지 않다.
+`GET /api/user`는 [`authenticate_user`](../../app/users/auth.py)로 인증 Header를 읽고, [`decode_access_token`](../../app/security.py)으로 서명과 `exp`를 검증한 다음 데이터베이스에서 현재 사용자를 찾는다. 만료되었거나 `exp`가 없는 이전 토큰은 거부하지만 계정과 비밀번호는 유지된다. 사용자는 재로그인으로 새 토큰을 받을 수 있다. Refresh token, 자동 갱신, 서버 측 토큰 회수는 구현하지 않았다.
 
 ```text
 현재 구현됨
-└─ 회원가입 성공 → 사용자 ID를 담은 JWT 발급
-
-향후 필요한 흐름
+├─ 회원가입 성공 → JWT 발급
 ├─ 로그인 성공 → JWT 발급
-└─ 인증 요청 → JWT 검증 → 현재 사용자 식별
+└─ GET /api/user → JWT 검증 → 데이터베이스에서 현재 사용자 식별
 ```
 
 회원가입의 전체 처리 흐름과 관련 코드 위치는 [User Registration Flow](../architecture/flows/user-registration.md)에서 확인할 수 있다.
@@ -156,7 +156,7 @@ sequenceDiagram
 - JWT는 Header, Payload, Signature로 구성된다.
 - Payload는 암호화되지 않으므로 민감한 정보를 넣지 않는다.
 - Signature는 토큰의 발급자와 무결성을 검증하지만 기밀성을 제공하지 않는다.
-- 현재 프로젝트는 `sub`에 사용자 ID를 저장하고 `HS256`과 `JWT_SECRET_KEY`로 서명한다.
-- 회원가입과 로그인 모두 성공 후 JWT를 반환할 수 있다.
-- 인증 요청에서는 JWT 검증 후 `sub`의 사용자 ID로 현재 사용자를 식별한다.
-- 현재 구현 범위는 회원가입 시 JWT 발급까지이며 로그인과 인증 요청 처리는 아직 구현되지 않았다.
+- 현재 프로젝트는 `sub`·`iat`·`exp`를 담고 `HS256`과 `JWT_SECRET_KEY`로 서명한다.
+- 인증 요청에서는 서명과 `exp`를 검증하고 `sub`의 사용자 ID로 실제 사용자를 조회한다.
+- 만료되거나 `exp`가 없는 토큰은 거부하며, 재로그인으로 새 토큰을 받을 수 있다.
+- `GET /api/user`는 요청 토큰을 그대로 반환하며 만료 시각을 연장하지 않는다.
