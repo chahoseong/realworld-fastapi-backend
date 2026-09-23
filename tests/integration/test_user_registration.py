@@ -1,3 +1,4 @@
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import jwt
@@ -318,17 +319,19 @@ def test_register_user_does_not_expose_password_fields(
     assert "password_hash" not in response_user
 
 
-def test_register_user_returns_token_with_created_user_id_as_subject(
+def test_register_user_returns_jwt_with_sub_and_one_hour_expiry(
     client: TestClient,
     test_session_factory: sessionmaker[Session],
     test_jwt_secret_key: str,
 ) -> None:
-    """등록 응답의 JWT가 데이터베이스에 저장된 사용자 ID를 식별해야 한다."""
+    """회원가입 JWT가 저장된 사용자를 식별하고 발급 1시간 후 만료되어야 한다."""
     # Arrange
     request_payload = _registration_payload()
+    earliest_issued_at = int(datetime.now(UTC).timestamp())
 
     # Act
     response = client.post(REGISTER_USER_PATH, json=request_payload)
+    latest_issued_at = int(datetime.now(UTC).timestamp())
 
     # Assert
     assert response.status_code == status.HTTP_201_CREATED
@@ -345,6 +348,10 @@ def test_register_user_returns_token_with_created_user_id_as_subject(
 
     assert stored_user is not None
     assert claims["sub"] == str(stored_user.id)
+    assert type(claims["iat"]) is int
+    assert type(claims["exp"]) is int
+    assert earliest_issued_at <= claims["iat"] <= latest_issued_at
+    assert claims["exp"] == claims["iat"] + 3600
 
 
 def test_register_user_without_password_does_not_change_database(

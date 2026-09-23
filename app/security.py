@@ -1,9 +1,11 @@
+from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import jwt
 from pwdlib import PasswordHash
 
 JWT_ALGORITHM = "HS256"
+ACCESS_TOKEN_LIFETIME = timedelta(hours=1)
 
 _password_hash = PasswordHash.recommended()
 
@@ -17,8 +19,13 @@ def verify_password(password: str, encoded_password: str) -> bool:
 
 
 def create_access_token(user_id: int, secret_key: str) -> str:
+    issued_at = datetime.now(UTC)
     return jwt.encode(
-        {"sub": str(user_id)},
+        {
+            "sub": str(user_id),
+            "iat": issued_at,
+            "exp": issued_at + ACCESS_TOKEN_LIFETIME,
+        },
         secret_key,
         algorithm=JWT_ALGORITHM,
     )
