@@ -83,3 +83,14 @@ class UserPayload(BaseModel):
 
 class UserResponse(BaseModel):
     user: UserPayload
+
+
+class ProfilePayload(BaseModel):
+    username: str
+    bio: str | None
+    image: str | None
+    following: bool
+
+
+class ProfileResponse(BaseModel):
+    profile: ProfilePayload

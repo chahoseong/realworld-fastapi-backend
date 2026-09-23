@@ -6,11 +6,13 @@ from app.config import get_settings
 from app.database import SessionDep
 from app.errors import ApiError
 from app.security import create_access_token, hash_password, verify_password
-from app.users.auth import CurrentUserDep
+from app.users.auth import CurrentUserDep, OptionalUserDep
 from app.users.models import User
 from app.users.schemas import (
     LoginUserRequest,
     NewUserRequest,
+    ProfilePayload,
+    ProfileResponse,
     UpdateUserRequest,
     UserPayload,
     UserResponse,
@@ -153,5 +155,25 @@ def update_current_user(
             token=token,
             bio=user.bio,
             image=user.image,
+        )
+    )
+
+
+@router.get("/profiles/{username}")
+def get_profile(
+    username: str,
+    session: SessionDep,
+    _viewer: OptionalUserDep,
+) -> ProfileResponse:
+    user = session.scalar(select(User).where(User.username == username))
+    if user is None:
+        raise ApiError(status.HTTP_404_NOT_FOUND, {"profile": ["not found"]})
+
+    return ProfileResponse(
+        profile=ProfilePayload(
+            username=user.username,
+            bio=user.bio,
+            image=user.image,
+            following=False,
         )
     )

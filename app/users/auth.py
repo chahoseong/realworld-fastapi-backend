@@ -1,8 +1,9 @@
 from typing import Annotated
 
 import jwt
-from fastapi import Depends, status
+from fastapi import Depends, Request, status
 from fastapi.security import APIKeyHeader
+from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.database import SessionDep
@@ -28,6 +29,20 @@ def authenticate_user(
     if authorization is None:
         raise ApiError(status.HTTP_401_UNAUTHORIZED, {"token": ["is missing"]})
 
+    return _authenticate_authorization(session, authorization)
+
+
+def get_optional_user(session: SessionDep, request: Request) -> User | None:
+    if "authorization" not in request.headers:
+        return None
+
+    user, _ = _authenticate_authorization(session, request.headers["authorization"])
+    return user
+
+
+def _authenticate_authorization(
+    session: Session, authorization: str
+) -> tuple[User, str]:
     scheme, separator, token = authorization.partition(" ")
     if scheme != "Token" or not separator or not token or token != token.strip():
         raise _invalid_token()
@@ -59,3 +74,4 @@ def authenticate_user(
 
 
 CurrentUserDep = Annotated[tuple[User, str], Depends(authenticate_user)]
+OptionalUserDep = Annotated[User | None, Depends(get_optional_user)]
