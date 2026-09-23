@@ -19,6 +19,22 @@ class NewUserRequest(BaseModel):
     user: NewUser
 
 
+class LoginUser(BaseModel):
+    email: str
+    password: str
+
+    @field_validator("email", "password", mode="before")
+    @classmethod
+    def reject_blank_string(cls, value: object) -> object:
+        if isinstance(value, str) and value.strip() == "":
+            raise PydanticCustomError("blank", "can't be blank")
+        return value
+
+
+class LoginUserRequest(BaseModel):
+    user: LoginUser
+
+
 class UserPayload(BaseModel):
     username: str
     email: EmailStr

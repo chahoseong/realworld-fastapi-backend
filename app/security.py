@@ -36,4 +36,5 @@ def decode_access_token(token: str, secret_key: str) -> dict[str, Any]:
         token,
         secret_key,
         algorithms=[JWT_ALGORITHM],
+        options={"require": ["exp"]},
     )
