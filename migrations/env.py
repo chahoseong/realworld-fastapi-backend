@@ -3,6 +3,7 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import Connection, create_engine, pool
 
+from app.articles.models import Article, ArticleTag, Tag  # noqa: F401
 from app.config import get_settings
 from app.database import Base
 from app.users.models import User  # noqa: F401

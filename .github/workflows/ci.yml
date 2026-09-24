@@ -171,6 +171,30 @@ jobs:
             --to-entry 1 \
             tests/api/hurl/errors_profiles.hurl
 
+      - name: Run article creation contract
+        run: |
+          hurl --test --jobs 1 --no-cookie-store \
+            --variable "host=$API_ORIGIN" \
+            --variable "uid=$HURL_UID" \
+            --to-entry 2 \
+            tests/api/hurl/articles.hurl
+
+      - name: Run article initial error contract
+        run: |
+          hurl --test --jobs 1 --no-cookie-store \
+            --variable "host=$API_ORIGIN" \
+            --variable "uid=$HURL_UID" \
+            --to-entry 2 \
+            tests/api/hurl/errors_articles.hurl
+
+      - name: Run tag read contract
+        run: |
+          hurl --test --jobs 1 --no-cookie-store \
+            --variable "host=$API_ORIGIN" \
+            --variable "uid=$HURL_UID" \
+            --to-entry 3 \
+            tests/api/hurl/tags.hurl
+
       - name: Show API logs
         if: failure() && steps.api.outcome != 'skipped'
         run: cat "$RUNNER_TEMP/api.log"

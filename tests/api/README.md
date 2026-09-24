@@ -11,6 +11,8 @@ This directory contains local, unmodified copies of the official RealWorld Hurl 
 
 The upstream commit fixed in `docs/api/CONTRACT.md` remains the source of truth. Do not change local requests or assertions to accommodate this implementation. When the contract version changes through an explicit project decision, replace the files from the newly selected upstream commit and update this document and `docs/api/CONTRACT.md` together.
 
+For Phase 3's first article review unit, run `articles.hurl` through entry 2, `errors_articles.hurl` through entry 2, and `tags.hurl` through entry 3. Later entries require the Phase 4 article list or article deletion; their Phase 3 requirements are covered by PostgreSQL integration tests until those endpoints are implemented.
+
 ## Prerequisites
 
 - Install Hurl and make it available on `PATH`.
