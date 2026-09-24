@@ -1,14 +1,14 @@
-# User Authentication Flow
+# Current User Retrieval Flow
 
-이 문서는 보호된 요청에서 `Authorization: Token <JWT>`를 검증하고 실제 사용자를 식별하는 공통 인증 흐름을 설명한다. 예시는 `GET /api/user`이며, 같은 필수 인증 의존성을 `PUT /api/user`도 사용한다.
-
-외부에 보장하는 요청·응답 형식은 [`docs/api/CONTRACT.md`](../../api/CONTRACT.md)를 기준으로 한다.
+이 문서는 `GET /api/user`로 본인 정보를 조회하는 흐름을 설명한다. 
 
 ## Building Block View
 
-보호된 엔드포인트는 Authentication Dependency에 의존한다. 이 의존성은 Security로 토큰을 검증하고 Persistence로 실제 사용자를 조회한 뒤 엔드포인트가 실행되도록 한다.
+`GET /api/user`는 Authentication Dependency에 의존한다. 이 의존성은 Security로 토큰을 검증하고 Persistence로 실제 사용자를 조회한 뒤 본인 조회 엔드포인트가 실행되도록 한다.
 
-![인증 Building Block View](../diagrams/user-authentication.svg)
+![본인 정보 조회 Building Block View](../diagrams/user-retrieval.svg)
+
+### Component Responsibilities
 
 | 컴포넌트                  | 책임                                                             | 코드 위치                                                                                                                |
 | ------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
@@ -21,7 +21,7 @@
 
 ## Runtime View
 
-### 시나리오: Authentication
+### 시나리오: 본인 정보 조회
 
 ```mermaid
 sequenceDiagram
@@ -51,7 +51,7 @@ sequenceDiagram
 
 인증은 토큰을 발급한 요청이 회원가입인지 로그인인지 구분하지 않는다. 토큰만으로 계정의 현재 존재를 보장할 수 없으므로 DB에서 사용자를 다시 찾는다. `GET /api/user`는 요청 토큰을 그대로 반환하고 새 토큰을 발급하지 않는다.
 
-### 실패 흐름: 인증이 거부되는 지점
+### 실패 흐름
 
 ```mermaid
 flowchart TD
@@ -68,11 +68,11 @@ flowchart TD
     User -- 예 --> Endpoint["본인 조회 실행"]
 ```
 
-| 실패 조건                                                                                               | 응답    | 보호된 엔드포인트 |
-| ------------------------------------------------------------------------------------------------------- | ------- | ----------------- |
-| `Authorization` 헤더가 없는 경우                                                                      | `401` | 실행되지 않음     |
-| `Token` 형식이나 JWT 서명이 잘못되었거나, `exp`가 없거나 만료되었거나, `sub`가 유효하지 않은 경우 | `401` | 실행되지 않음     |
-| `sub`의 사용자 ID가 DB에 없는 경우                                                                    | `401` | 실행되지 않음     |
+| 실패 조건                                                                                               | 응답    |
+| ------------------------------------------------------------------------------------------------------- | ------- |
+| `Authorization` 헤더가 없는 경우                                                                      | `401` |
+| `Token` 형식이나 JWT 서명이 잘못되었거나, `exp`가 없거나 만료되었거나, `sub`가 유효하지 않은 경우 | `401` |
+| `sub`의 사용자 ID가 DB에 없는 경우                                                                    | `401` |
 
 ## 데이터와 보안 경계
 
