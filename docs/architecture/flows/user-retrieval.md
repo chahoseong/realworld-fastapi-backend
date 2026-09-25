@@ -1,14 +1,8 @@
 # Current User Retrieval Flow
 
-이 문서는 `GET /api/user`로 본인 정보를 조회하는 흐름을 설명한다. 
+이 문서는 `GET /api/user`로 본인 정보를 조회하는 흐름을 설명한다.
 
-## Building Block View
-
-`GET /api/user`는 Authentication Dependency에 의존한다. 이 의존성은 Security로 토큰을 검증하고 Persistence로 실제 사용자를 조회한 뒤 본인 조회 엔드포인트가 실행되도록 한다.
-
-![본인 정보 조회 Building Block View](../diagrams/user-retrieval.svg)
-
-### Component Responsibilities
+## Component Responsibilities
 
 | 컴포넌트                  | 책임                                                             | 코드 위치                                                                                                                |
 | ------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
@@ -50,31 +44,3 @@ sequenceDiagram
 ```
 
 인증은 토큰을 발급한 요청이 회원가입인지 로그인인지 구분하지 않는다. 토큰만으로 계정의 현재 존재를 보장할 수 없으므로 DB에서 사용자를 다시 찾는다. `GET /api/user`는 요청 토큰을 그대로 반환하고 새 토큰을 발급하지 않는다.
-
-### 실패 흐름
-
-```mermaid
-flowchart TD
-    Request["GET /api/user"] --> Header{"Authorization 헤더가 있는가?"}
-    Header -- 아니오 --> Missing["오류 응답(401)<br/>토큰 누락"]
-    Header -- 예 --> Format{"Token 형식이 올바른가?"}
-    Format -- 아니오 --> Invalid["오류 응답(401)<br/>토큰 무효"]
-    Format -- 예 --> JWT{"JWT 서명·만료가 유효한가?"}
-    JWT -- 아니오 --> Invalid
-    JWT -- 예 --> Subject{"sub가 유효한 사용자 ID인가?"}
-    Subject -- 아니오 --> Invalid
-    Subject -- 예 --> User{"DB에 사용자가 존재하는가?"}
-    User -- 아니오 --> Invalid
-    User -- 예 --> Endpoint["본인 조회 실행"]
-```
-
-| 실패 조건                                                                                               | 응답    |
-| ------------------------------------------------------------------------------------------------------- | ------- |
-| `Authorization` 헤더가 없는 경우                                                                      | `401` |
-| `Token` 형식이나 JWT 서명이 잘못되었거나, `exp`가 없거나 만료되었거나, `sub`가 유효하지 않은 경우 | `401` |
-| `sub`의 사용자 ID가 DB에 없는 경우                                                                    | `401` |
-
-## 데이터와 보안 경계
-
-- `exp`는 만료 시각을 정의하며 인증 시 필수다. `exp`가 없거나 만료된 토큰은 거부한다.
-- 본인 조회는 토큰의 만료 시간을 연장하지 않는다. 만료되면 재로그인으로 새 토큰을 발급받을 수 있다.
