@@ -148,6 +148,56 @@ def test_invalid_token_is_rejected_when_listing_comments(
     assert response.json() == {"errors": {"token": ["is invalid"]}}
 
 
+def test_unauthenticated_deletions_preserve_existing_article_and_comment(
+    client: TestClient,
+) -> None:
+    """인증 없이 실제 게시글·댓글을 삭제해도 두 데이터가 그대로 유지된다."""
+    # Arrange
+    _, token = _register_user(client)
+    article = _create_article(client, token, [f"stable-{uuid4().hex}"])
+    slug = cast(str, article["slug"])
+    comment = _create_comment(client, token, slug, "Preserve this comment")
+
+    # Act
+    article_deletion = client.delete(f"/api/articles/{slug}")
+    comment_deletion = client.delete(f"/api/articles/{slug}/comments/{comment['id']}")
+    article_read = client.get(f"/api/articles/{slug}")
+    comments_read = client.get(f"/api/articles/{slug}/comments")
+
+    # Assert
+    assert article_deletion.status_code == status.HTTP_401_UNAUTHORIZED
+    assert comment_deletion.status_code == status.HTTP_401_UNAUTHORIZED
+    assert article_read.status_code == status.HTTP_200_OK
+    assert article_read.json() == {"article": article}
+    assert comments_read.status_code == status.HTTP_200_OK
+    assert comments_read.json() == {"comments": [comment]}
+
+
+def test_blank_comment_body_is_rejected_without_changing_existing_comments(
+    client: TestClient,
+) -> None:
+    """공백만 있는 댓글은 거부되고 기존 댓글 목록은 바뀌지 않는다."""
+    # Arrange
+    _, token = _register_user(client)
+    article = _create_article(client, token)
+    slug = cast(str, article["slug"])
+    existing_comment = _create_comment(client, token, slug, "Existing comment")
+
+    # Act
+    rejected = client.post(
+        f"/api/articles/{slug}/comments",
+        headers={"Authorization": f"Token {token}"},
+        json={"comment": {"body": "   "}},
+    )
+    comments_read = client.get(f"/api/articles/{slug}/comments")
+
+    # Assert
+    assert rejected.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
+    assert rejected.json() == {"errors": {"body": ["can't be blank"]}}
+    assert comments_read.status_code == status.HTTP_200_OK
+    assert comments_read.json() == {"comments": [existing_comment]}
+
+
 def test_only_comment_author_can_delete_their_comment_on_another_users_article(
     client: TestClient,
 ) -> None:
