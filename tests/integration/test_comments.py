@@ -148,6 +148,67 @@ def test_invalid_token_is_rejected_when_listing_comments(
     assert response.json() == {"errors": {"token": ["is invalid"]}}
 
 
+def test_article_author_cannot_delete_another_users_comment(
+    client: TestClient,
+) -> None:
+    """게시글 작성자도 타인의 댓글은 삭제할 수 없고 댓글 작성자는 삭제할 수 있다."""
+    # Arrange
+    _, article_author_token = _register_user(client)
+    _, comment_author_token = _register_user(client)
+    article = _create_article(client, article_author_token)
+    slug = cast(str, article["slug"])
+    comment = _create_comment(client, comment_author_token, slug, "Own comment")
+    comment_url = f"/api/articles/{slug}/comments/{comment['id']}"
+
+    # Act
+    forbidden = client.delete(
+        comment_url,
+        headers={"Authorization": f"Token {article_author_token}"},
+    )
+    after_forbidden = client.get(f"/api/articles/{slug}/comments")
+    deleted = client.delete(
+        comment_url,
+        headers={"Authorization": f"Token {comment_author_token}"},
+    )
+    after_deletion = client.get(f"/api/articles/{slug}/comments")
+    article_read = client.get(f"/api/articles/{slug}")
+
+    # Assert
+    assert forbidden.status_code == status.HTTP_403_FORBIDDEN
+    assert forbidden.json() == {"errors": {"comment": ["forbidden"]}}
+    assert after_forbidden.json() == {"comments": [comment]}
+    assert deleted.status_code == status.HTTP_204_NO_CONTENT
+    assert after_deletion.json() == {"comments": []}
+    assert article_read.status_code == status.HTTP_200_OK
+
+
+def test_comment_cannot_be_deleted_through_another_articles_slug(
+    client: TestClient,
+) -> None:
+    """다른 게시글의 slug와 댓글 ID를 조합해도 댓글이 삭제되지 않는다."""
+    # Arrange
+    _, token = _register_user(client)
+    first_article = _create_article(client, token)
+    second_article = _create_article(client, token)
+    first_slug = cast(str, first_article["slug"])
+    second_slug = cast(str, second_article["slug"])
+    comment = _create_comment(client, token, first_slug, "First article comment")
+
+    # Act
+    rejected = client.delete(
+        f"/api/articles/{second_slug}/comments/{comment['id']}",
+        headers={"Authorization": f"Token {token}"},
+    )
+    first_comments = client.get(f"/api/articles/{first_slug}/comments")
+    second_comments = client.get(f"/api/articles/{second_slug}/comments")
+
+    # Assert
+    assert rejected.status_code == status.HTTP_404_NOT_FOUND
+    assert rejected.json() == {"errors": {"comment": ["not found"]}}
+    assert first_comments.json() == {"comments": [comment]}
+    assert second_comments.json() == {"comments": []}
+
+
 def test_deleting_article_removes_its_comments_without_affecting_other_data(
     client: TestClient,
     test_session_factory: sessionmaker[Session],
@@ -248,6 +309,50 @@ def test_comment_creation_database_failure_leaves_no_comment_and_preserves_artic
     assert reread_comments.json() == {"comments": []}
     assert stored_article is not None
     assert stored_comment is None
+
+
+def test_comment_delete_database_failure_preserves_comment_and_article(
+    server_error_client: TestClient,
+    test_session_factory: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """DB 오류로 댓글 삭제에 실패하면 댓글과 게시글이 유지된다."""
+    # Arrange
+    _, token = _register_user(server_error_client)
+    article = _create_article(server_error_client, token)
+    slug = cast(str, article["slug"])
+    comment = _create_comment(server_error_client, token, slug, "Keep comment")
+    database_error_seen = False
+
+    def fail_after_flush(session: Session) -> None:
+        nonlocal database_error_seen
+        session.flush()
+        try:
+            session.execute(text("SELECT 1 / 0"))
+        except DBAPIError:
+            database_error_seen = True
+            raise
+
+    # Act
+    with monkeypatch.context() as patch:
+        patch.setattr(Session, "commit", fail_after_flush)
+        rejected = server_error_client.delete(
+            f"/api/articles/{slug}/comments/{comment['id']}",
+            headers={"Authorization": f"Token {token}"},
+        )
+    reread_article = server_error_client.get(f"/api/articles/{slug}")
+    reread_comments = server_error_client.get(f"/api/articles/{slug}/comments")
+    with test_session_factory() as session:
+        stored_comment = session.get(Comment, comment["id"])
+
+    # Assert
+    assert rejected.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
+    assert database_error_seen
+    assert reread_article.status_code == status.HTTP_200_OK
+    assert reread_article.json()["article"] == article
+    assert reread_comments.status_code == status.HTTP_200_OK
+    assert reread_comments.json() == {"comments": [comment]}
+    assert stored_comment is not None
 
 
 def test_article_delete_database_failure_restores_comment_and_tag(

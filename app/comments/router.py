@@ -86,3 +86,33 @@ def list_comments(
     return CommentsResponse(
         comments=[_comment_payload(comment, author) for comment, author in rows]
     )
+
+
+@router.delete("/articles/{slug}/comments/{id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_comment(
+    slug: str,
+    id: int,
+    current_user: CurrentUserDep,
+    session: SessionDep,
+) -> None:
+    author, _ = current_user
+    article = session.scalar(select(Article).where(Article.slug == slug))
+    if article is None:
+        raise ApiError(status.HTTP_404_NOT_FOUND, {"article": ["not found"]})
+
+    comment = session.scalar(
+        select(Comment)
+        .where(Comment.id == id, Comment.article_id == article.id)
+        .with_for_update()
+    )
+    if comment is None:
+        raise ApiError(status.HTTP_404_NOT_FOUND, {"comment": ["not found"]})
+    if comment.author_id != author.id:
+        raise ApiError(status.HTTP_403_FORBIDDEN, {"comment": ["forbidden"]})
+
+    try:
+        session.delete(comment)
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise

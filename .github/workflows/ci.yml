@@ -203,29 +203,26 @@ jobs:
             --to-entry 3 \
             tests/api/hurl/tags.hurl
 
-      - name: Run comment creation and read contract
+      - name: Run comment contract
         run: |
           hurl --test --jobs 1 --no-cookie-store \
             --variable "host=$API_ORIGIN" \
             --variable "uid=$HURL_UID" \
-            --to-entry 5 \
             tests/api/hurl/comments.hurl
 
-      - name: Run unauthenticated comment creation contract
+      - name: Run comment error contract
         run: |
           hurl --test --jobs 1 --no-cookie-store \
             --variable "host=$API_ORIGIN" \
             --variable "uid=$HURL_UID" \
-            --to-entry 1 \
             tests/api/hurl/errors_comments.hurl
 
-      - name: Run comment validation and unknown article contract
+      - name: Run authorization error contract
         run: |
           hurl --test --jobs 1 --no-cookie-store \
             --variable "host=$API_ORIGIN" \
             --variable "uid=$HURL_UID" \
-            --from-entry 3 --to-entry 7 \
-            tests/api/hurl/errors_comments.hurl
+            tests/api/hurl/errors_authorization.hurl
 
       - name: Show API logs
         if: failure() && steps.api.outcome != 'skipped'
