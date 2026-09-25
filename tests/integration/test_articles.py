@@ -8,6 +8,7 @@ from fastapi import status
 from fastapi.testclient import TestClient
 from httpx2 import Response
 from sqlalchemy import func, select, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session, sessionmaker
 
 from app.articles.models import Article, ArticleTag, Tag
@@ -551,12 +552,18 @@ def test_invalid_article_update_is_rejected_without_changing_article(
     assert reread.json()["article"] == created
 
 
-def test_article_update_commit_failure_restores_content_and_tags(
+@pytest.mark.parametrize(
+    "failure_kind",
+    ["python", "postgres"],
+    ids=["python-exception-after-flush", "postgres-error-after-flush"],
+)
+def test_article_update_save_failure_restores_content_and_tags(
     server_error_client: TestClient,
     test_session_factory: sessionmaker[Session],
     monkeypatch: pytest.MonkeyPatch,
+    failure_kind: str,
 ) -> None:
-    """수정 저장이 실패하면 게시글 내용과 태그 관계가 모두 원래대로 남는다."""
+    """Python 예외나 PostgreSQL 오류로 저장에 실패해도 글과 태그가 유지된다."""
     # Arrange
     _, token = _register_user(server_error_client)
     old_tag = f"old-{uuid4().hex}"
@@ -564,10 +571,18 @@ def test_article_update_commit_failure_restores_content_and_tags(
     created = _create_article(
         server_error_client, token, f"Before {uuid4().hex}", [old_tag]
     )
+    postgres_error_seen = False
 
     def fail_after_flush(session: Session) -> None:
+        nonlocal postgres_error_seen
         session.flush()
-        raise RuntimeError("simulated commit failure")
+        if failure_kind == "python":
+            raise RuntimeError("simulated commit failure")
+        try:
+            session.execute(text("SELECT 1 / 0"))
+        except DBAPIError:
+            postgres_error_seen = True
+            raise
 
     # Act
     with monkeypatch.context() as patch:
@@ -591,6 +606,8 @@ def test_article_update_commit_failure_restores_content_and_tags(
 
     # Assert
     assert rejected.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
+    if failure_kind == "postgres":
+        assert postgres_error_seen
     assert reread.status_code == status.HTTP_200_OK
     assert reread.json()["article"] == created
     assert tags.status_code == status.HTTP_200_OK
