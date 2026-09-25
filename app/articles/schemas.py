@@ -22,6 +22,26 @@ class NewArticleRequest(BaseModel):
     article: NewArticle
 
 
+class UpdateArticle(BaseModel):
+    title: str | None = None
+    description: str | None = None
+    body: str | None = None
+    tagList: list[str] | None = None
+
+    @field_validator("title", "description", "body", "tagList", mode="before")
+    @classmethod
+    def reject_null_or_blank(cls, value: object) -> object:
+        if value is None:
+            raise PydanticCustomError("null", "can't be null")
+        if isinstance(value, str) and value.strip() == "":
+            raise PydanticCustomError("blank", "can't be blank")
+        return value
+
+
+class UpdateArticleRequest(BaseModel):
+    article: UpdateArticle
+
+
 class ArticleAuthor(BaseModel):
     username: str
     bio: str | None

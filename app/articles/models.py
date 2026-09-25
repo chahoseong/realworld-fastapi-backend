@@ -1,6 +1,7 @@
 from datetime import datetime
+from uuid import UUID
 
-from sqlalchemy import DateTime, ForeignKey, Identity, Text, UniqueConstraint
+from sqlalchemy import DateTime, ForeignKey, Identity, Text, UniqueConstraint, Uuid
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.database import Base
@@ -8,11 +9,15 @@ from app.database import Base
 
 class Article(Base):
     __tablename__ = "articles"
-    __table_args__ = (UniqueConstraint("slug", name="uq_articles_slug"),)
+    __table_args__ = (
+        UniqueConstraint("slug", name="uq_articles_slug"),
+        UniqueConstraint("public_id", name="uq_articles_public_id"),
+    )
 
     id: Mapped[int] = mapped_column(Identity(), primary_key=True)
     author_id: Mapped[int] = mapped_column(ForeignKey("users.id"), nullable=False)
     slug: Mapped[str] = mapped_column(Text)
+    public_id: Mapped[UUID] = mapped_column(Uuid())
     title: Mapped[str] = mapped_column(Text)
     description: Mapped[str] = mapped_column(Text)
     body: Mapped[str] = mapped_column(Text)

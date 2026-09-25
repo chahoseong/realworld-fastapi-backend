@@ -179,12 +179,20 @@ jobs:
             --to-entry 2 \
             tests/api/hurl/articles.hurl
 
-      - name: Run article initial error contract
+      - name: Run article initial error and change auth contract
         run: |
           hurl --test --jobs 1 --no-cookie-store \
             --variable "host=$API_ORIGIN" \
             --variable "uid=$HURL_UID" \
-            --to-entry 2 \
+            --to-entry 4 \
+            tests/api/hurl/errors_articles.hurl
+
+      - name: Run article validation and unknown update contract
+        run: |
+          hurl --test --jobs 1 --no-cookie-store \
+            --variable "host=$API_ORIGIN" \
+            --variable "uid=$HURL_UID" \
+            --from-entry 8 --to-entry 14 \
             tests/api/hurl/errors_articles.hurl
 
       - name: Run tag read contract
