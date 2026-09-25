@@ -7,6 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.articles.lookup import find_article_by_public_slug
 from app.articles.models import Article, ArticleTag, Tag
 from app.articles.schemas import (
     ArticleAuthor,
@@ -167,14 +168,7 @@ def create_article(
 
 @router.get("/articles/{slug}")
 def get_article(slug: str, session: SessionDep) -> ArticleResponse:
-    match = re.search(r"-([0-9a-f]{32})$", slug)
-    article = (
-        session.scalar(
-            select(Article).where(Article.public_id == UUID(hex=match.group(1)))
-        )
-        if match is not None
-        else None
-    )
+    article = find_article_by_public_slug(session, slug)
     if article is None:
         raise ApiError(status.HTTP_404_NOT_FOUND, {"article": ["not found"]})
 
