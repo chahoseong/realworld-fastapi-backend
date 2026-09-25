@@ -93,10 +93,10 @@ def test_comment_on_another_users_article_is_public_and_scoped_to_article(
     assert other_article_list.json() == {"comments": []}
 
 
-def test_comments_remain_on_article_after_title_change(
+def test_article_rename_preserves_comment_reads_and_rejects_old_slug_creation(
     client: TestClient,
 ) -> None:
-    """게시글 제목과 slug가 바뀌어도 기존 댓글을 새 주소와 이전 읽기 주소로 조회한다."""
+    """제목 변경 후 댓글은 새·이전 주소로 조회되지만 이전 주소로 작성할 수 없다."""
     # Arrange
     _, token = _register_user(client)
     article = _create_article(client, token)
@@ -148,7 +148,7 @@ def test_invalid_token_is_rejected_when_listing_comments(
     assert response.json() == {"errors": {"token": ["is invalid"]}}
 
 
-def test_article_author_cannot_delete_another_users_comment(
+def test_only_comment_author_can_delete_their_comment_on_another_users_article(
     client: TestClient,
 ) -> None:
     """게시글 작성자도 타인의 댓글은 삭제할 수 없고 댓글 작성자는 삭제할 수 있다."""
@@ -166,6 +166,13 @@ def test_article_author_cannot_delete_another_users_comment(
         headers={"Authorization": f"Token {article_author_token}"},
     )
     after_forbidden = client.get(f"/api/articles/{slug}/comments")
+
+    # Assert
+    assert forbidden.status_code == status.HTTP_403_FORBIDDEN
+    assert forbidden.json() == {"errors": {"comment": ["forbidden"]}}
+    assert after_forbidden.json() == {"comments": [comment]}
+
+    # Act
     deleted = client.delete(
         comment_url,
         headers={"Authorization": f"Token {comment_author_token}"},
@@ -174,9 +181,6 @@ def test_article_author_cannot_delete_another_users_comment(
     article_read = client.get(f"/api/articles/{slug}")
 
     # Assert
-    assert forbidden.status_code == status.HTTP_403_FORBIDDEN
-    assert forbidden.json() == {"errors": {"comment": ["forbidden"]}}
-    assert after_forbidden.json() == {"comments": [comment]}
     assert deleted.status_code == status.HTTP_204_NO_CONTENT
     assert after_deletion.json() == {"comments": []}
     assert article_read.status_code == status.HTTP_200_OK

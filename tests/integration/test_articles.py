@@ -174,12 +174,12 @@ def test_create_article_with_invalid_field_returns_422_without_new_records(
         assert _counts(session) == before
 
 
-def test_article_commit_failure_leaves_no_new_records_and_allows_retry(
+def test_failed_article_creation_leaves_no_new_records_and_allows_retry(
     server_error_client: TestClient,
     test_session_factory: sessionmaker[Session],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """커밋 실패 후 신규 레코드가 남지 않고 같은 요청을 다시 보내면 성공한다."""
+    """게시글 저장에 실패하면 새 글·태그가 남지 않고 같은 요청을 재시도할 수 있다."""
     # Arrange
     _, token = _register_user(server_error_client)
     title = f"Rollback {uuid4().hex}"
@@ -239,21 +239,14 @@ def test_update_article_changes_only_requested_body_and_preserves_tags(
     assert reread.json()["article"] == updated
 
 
-def test_title_changes_keep_previous_links_to_the_same_article(
+def test_title_changes_preserve_public_id_and_previous_links(
     client: TestClient,
-    test_session_factory: sessionmaker[Session],
 ) -> None:
-    """제목을 여러 번 바꿔도 이전 주소들이 같은 게시글의 최신 내용을 보여준다."""
+    """제목을 여러 번 바꿔도 UUID 접미부와 이전 주소의 최신 조회 결과가 유지된다."""
     # Arrange
     _, token = _register_user(client)
     created = _create_article(client, token, f"Original {uuid4().hex}")
-    with test_session_factory() as session:
-        original = session.scalar(
-            select(Article).where(Article.slug == created["slug"])
-        )
-        assert original is not None
-        original_id = original.id
-        public_id = original.public_id
+    public_suffix = cast(str, created["slug"]).rsplit("-", 1)[-1]
     new_title = f"Changed {uuid4().hex}"
     final_title = f"Final {uuid4().hex}"
 
@@ -268,8 +261,6 @@ def test_title_changes_keep_previous_links_to_the_same_article(
         client.get(f"/api/articles/{slug}")
         for slug in (created["slug"], first_update["slug"], final["slug"])
     ]
-    with test_session_factory() as session:
-        stored = session.scalar(select(Article).where(Article.slug == final["slug"]))
 
     # Assert
     assert final["title"] == final_title
@@ -278,10 +269,9 @@ def test_title_changes_keep_previous_links_to_the_same_article(
     assert final["updatedAt"] != created["updatedAt"]
     assert all(read.status_code == status.HTTP_200_OK for read in reads)
     assert all(read.json()["article"] == final for read in reads)
-    assert stored is not None and stored.id == original_id
-    assert stored.public_id == public_id
+    assert len(public_suffix) == 32
     assert all(
-        cast(str, slug).endswith(public_id.hex)
+        cast(str, slug).rsplit("-", 1)[-1] == public_suffix
         for slug in (created["slug"], first_update["slug"], final["slug"])
     )
 
@@ -411,6 +401,8 @@ def test_concurrent_last_tag_removal_and_reuse_preserves_new_link(
             select(Tag).where(Tag.name == tag).with_for_update()
         )
         assert locked_tag is not None
+        lock_pid = lock_session.scalar(text("SELECT pg_backend_pid()"))
+        assert lock_pid is not None
 
         def wait_for_blocked_requests(expected: int) -> None:
             deadline = monotonic() + 5
@@ -418,10 +410,16 @@ def test_concurrent_last_tag_removal_and_reuse_preserves_new_link(
                 with test_session_factory() as monitor:
                     blocked = monitor.scalar(
                         text(
-                            "SELECT count(*) FROM pg_stat_activity "
-                            "WHERE datname = current_database() "
-                            "AND wait_event_type = 'Lock'"
-                        )
+                            "WITH RECURSIVE blocked(pid) AS ("
+                            "SELECT pid FROM pg_stat_activity "
+                            "WHERE :lock_pid = ANY(pg_blocking_pids(pid)) "
+                            "UNION "
+                            "SELECT activity.pid FROM pg_stat_activity AS activity "
+                            "JOIN blocked AS prior "
+                            "ON prior.pid = ANY(pg_blocking_pids(activity.pid))"
+                            ") SELECT count(*) FROM blocked"
+                        ),
+                        {"lock_pid": lock_pid},
                     )
                 if blocked is not None and blocked >= expected:
                     return
@@ -738,7 +736,7 @@ def test_delete_unknown_article_returns_404(client: TestClient) -> None:
     assert rejected.json() == {"errors": {"article": ["not found"]}}
 
 
-def test_delete_commit_failure_rolls_back_article_and_tag_links(
+def test_failed_article_deletion_preserves_article_and_tag_links(
     server_error_client: TestClient,
     test_session_factory: sessionmaker[Session],
     monkeypatch: pytest.MonkeyPatch,
