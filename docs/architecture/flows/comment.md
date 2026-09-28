@@ -8,6 +8,7 @@
 | ------------------- | ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------- |
 | FastAPI Application | 댓글 라우터를 HTTP 요청에 연결한다.                          | [`app/main.py`](../../../app/main.py)                                                                                     |
 | Authentication      | 작성·삭제 요청자를 식별한다. 목록 조회는 익명으로도 받는다. | [`app/users/auth.py`](../../../app/users/auth.py)                                                                         |
+| Follow Lookup       | 조회자가 각 댓글 작성자를 팔로우하는지 확인한다. | [`app/users/follows.py`](../../../app/users/follows.py) |
 | API Schemas         | 댓글 본문을 검증하고 공개 응답의 형태를 정한다.              | [`app/comments/schemas.py`](../../../app/comments/schemas.py)                                                             |
 | Comments Endpoint   | 대상 게시글과 댓글을 찾고 작성·목록 조회·삭제를 처리한다.  | [`app/comments/router.py`](../../../app/comments/router.py), [`app/articles/lookup.py`](../../../app/articles/lookup.py) |
 | Persistence         | 댓글을 게시글·작성자에 연결해 저장하고 조회한다.            | [`app/comments/models.py`](../../../app/comments/models.py), [`app/database.py`](../../../app/database.py)               |
@@ -44,7 +45,7 @@ sequenceDiagram
 ```
 
 - 댓글의 `article_id`는 URL로 찾은 게시글에서, `author_id`는 인증된 사용자에서 가져온다. `createdAt`과 `updatedAt`은 작성 시 같은 시각으로 저장한다.
-- 응답의 작성자에는 `username`, `bio`, `image`, `following`만 담긴다. 현재 `following`은 `false`다.
+- 응답의 작성자에는 `username`, `bio`, `image`, `following`만 담긴다. 작성 요청자는 댓글 작성자 자신이므로 작성 응답의 `following`은 `false`다.
 
 ### 시나리오: 게시글의 댓글 목록 조회
 
@@ -70,11 +71,15 @@ sequenceDiagram
     Endpoint->>Session: 이 게시글의 댓글과 작성자 조회
     Session->>DB: SELECT comments JOIN users BY article_id ORDER BY comment id
     DB-->>Endpoint: 댓글·작성자 목록
+    opt 인증된 조회자
+        Endpoint->>Session: 각 댓글 작성자와 조회자의 팔로우 관계 확인
+        Session->>DB: SELECT user_follows BY follower_id, followed_id
+    end
     Endpoint-->>Client: 200 OK (comments 배열)
 ```
 
 - 인증 헤더가 없어도 목록을 조회할 수 있다. 결과에는 URL이 가리키는 게시글에 속한 댓글만 포함되며 댓글 ID 순서로 반환된다. 댓글이 없으면 빈 `comments` 배열이다.
-- 각 댓글에는 본문과 작성·수정 시각, 공개 작성자 정보가 포함된다. 조회자가 누구인지에 따라 `following` 값을 계산하는 기능은 아직 없으며 `false`로 반환한다.
+- 각 댓글에는 본문과 작성·수정 시각, 공개 작성자 정보가 포함된다. `following`은 조회자가 해당 댓글 작성자를 팔로우하는지 나타낸다. 게시글 작성자의 팔로우 여부와는 별도로 계산하며 익명이면 `false`다.
 
 ### 시나리오: 댓글 삭제
 

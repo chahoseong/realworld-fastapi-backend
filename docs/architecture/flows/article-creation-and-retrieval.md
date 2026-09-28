@@ -7,7 +7,8 @@
 | 컴포넌트            | 책임                                                                          | 코드 위치                                                                                                                  |
 | ------------------- | ----------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
 | FastAPI Application | 게시글 라우터와 오류 처리기를 연결한다.                                       | [`app/main.py`](../../../app/main.py)                                                                                     |
-| Authentication      | 작성 요청의 토큰으로 사용자를 식별한다. 조회 요청에는 인증을 요구하지 않는다. | [`app/users/auth.py`](../../../app/users/auth.py)                                                                         |
+| Authentication      | 작성 요청은 인증을 요구한다. 조회는 익명으로 허용하고, 헤더가 있으면 토큰을 검증한다. | [`app/users/auth.py`](../../../app/users/auth.py)                                                                         |
+| Follow Lookup       | 조회자가 작성자를 팔로우하는지 저장된 관계로 확인한다. | [`app/users/follows.py`](../../../app/users/follows.py) |
 | API Schemas         | 생성 요청의 필수 필드와 빈 문자열을 검증하고 공개 응답의 형태를 정의한다.     | [`app/articles/schemas.py`](../../../app/articles/schemas.py)                                                             |
 | Articles Endpoint   | `slug` 생성, 게시글·태그 저장, 공개 조회와 응답 구성을 조정한다.           | [`app/articles/router.py`](../../../app/articles/router.py), [`app/articles/lookup.py`](../../../app/articles/lookup.py) |
 | Persistence         | 게시글과 태그를 저장하고 관계를 조회한다.                                     | [`app/articles/models.py`](../../../app/articles/models.py), [`app/database.py`](../../../app/database.py)               |
@@ -61,17 +62,27 @@ sequenceDiagram
     autonumber
     actor Client
     participant App as FastAPI Application
+    participant Auth as Optional Authentication
     participant Endpoint as Articles Endpoint
     participant Session as SQLAlchemy Session
     participant DB as PostgreSQL
 
     Client->>App: GET /api/articles/{slug}
-    App->>Endpoint: get_article(slug, session)
+    opt Authorization 헤더가 있음
+        App->>Auth: 토큰으로 조회자 확인
+        Auth-->>App: 조회자 User
+    end
+    App->>Endpoint: get_article(slug, viewer, session)
     Endpoint->>Session: slug의 UUID 접미부로 게시글 조회
     Session->>DB: SELECT articles, users, ordered tags
     DB-->>Endpoint: 게시글·작성자·태그
+    opt 인증된 조회자
+        Endpoint->>Session: 조회자와 작성자의 팔로우 관계 확인
+        Session->>DB: SELECT user_follows BY follower_id, followed_id
+    end
     Endpoint-->>Client: 200 OK (ArticleResponse)
 ```
 
 - 조회는 `slug` 끝의 UUID로 게시글을 찾는다. 조회 응답의 `tagList`는 저장된 `article_tags.position` 순서를 따른다.
-- 공개 응답의 작성자에는 `username`, `bio`, `image`, `following`만 담기며 이메일과 비밀번호 해시는 포함되지 않는다. 생성 응답도 같은 구조다. 현재 구현은 `following`과 `favorited`를 `false`, `favoritesCount`를 `0`으로 반환한다.
+- 공개 응답의 작성자에는 `username`, `bio`, `image`, `following`만 담기며 이메일과 비밀번호 해시는 포함되지 않는다. 조회 시 `following`은 조회자가 작성자를 팔로우하는지 나타내며 익명이면 `false`다. 생성 응답은 요청자 자신이 작성자이므로 `false`다. 현재 `favorited`는 `false`, `favoritesCount`는 `0`으로 반환한다.
+- 조회에 보낸 인증 헤더가 비어 있거나 토큰이 잘못되면 게시글 조회 전에 `401`을 반환한다. 인증 헤더가 없는 익명 조회는 허용한다.

@@ -81,6 +81,126 @@ def _counts(session: Session) -> tuple[int, int, int, int]:
     return counts  # type: ignore[return-value]
 
 
+@pytest.fixture
+def followed_article(
+    client: TestClient,
+) -> tuple[str, str, dict[str, object]]:
+    _, viewer_token = _register_user(client)
+    author_name, author_token = _register_user(client)
+    article = _create_article(
+        client,
+        author_token,
+        "Followed user's article",
+        [f"following-{uuid4().hex}"],
+    )
+    followed = client.post(
+        f"/api/profiles/{author_name}/follow",
+        headers={"Authorization": f"Token {viewer_token}"},
+    )
+    assert followed.status_code == status.HTTP_200_OK
+    assert followed.json()["profile"]["following"] is True
+    return author_name, viewer_token, article
+
+
+def test_article_following_depends_on_whether_the_viewer_follows_its_author(
+    client: TestClient,
+    followed_article: tuple[str, str, dict[str, object]],
+) -> None:
+    """게시글 작성자를 팔로우한 조회자에게는 following=true, 다른 조회자와 익명에게는 false를 반환한다."""
+    _, viewer_token, article = followed_article
+    _, unrelated_token = _register_user(client)
+
+    for headers, expected_following in (
+        ({"Authorization": f"Token {viewer_token}"}, True),
+        ({"Authorization": f"Token {unrelated_token}"}, False),
+        ({}, False),
+    ):
+        response = client.get(f"/api/articles/{article['slug']}", headers=headers)
+        expected_article = article | {
+            "author": cast(dict[str, object], article["author"])
+            | {"following": expected_following}
+        }
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json() == {"article": expected_article}
+
+
+def test_unfollowing_article_author_changes_following_without_changing_article(
+    client: TestClient,
+    followed_article: tuple[str, str, dict[str, object]],
+) -> None:
+    """게시글 작성자의 팔로우를 해제하면 새 조회에서 following=false가 되고, 게시글 내용과 식별자는 유지된다."""
+    author_name, viewer_token, article = followed_article
+    headers = {"Authorization": f"Token {viewer_token}"}
+    before = client.get(f"/api/articles/{article['slug']}", headers=headers)
+    assert before.status_code == status.HTTP_200_OK
+    assert before.json()["article"]["author"]["following"] is True
+
+    unfollowed = client.delete(f"/api/profiles/{author_name}/follow", headers=headers)
+    assert unfollowed.status_code == status.HTTP_200_OK
+    assert unfollowed.json()["profile"]["following"] is False
+    reread = client.get(f"/api/articles/{article['slug']}", headers=headers)
+    assert reread.status_code == status.HTTP_200_OK
+    assert reread.json() == {"article": article}
+
+
+def test_article_creation_and_update_expose_the_authors_public_fields(
+    client: TestClient,
+) -> None:
+    """팔로워와 팔로우 대상이 있는 작성자도 작성·수정 응답에는 자기 공개 정보와 following=false만 담긴다."""
+    author_name, token = _register_user(client)
+    other_name, other_token = _register_user(client)
+    headers = {"Authorization": f"Token {token}"}
+    updated_profile = client.put(
+        "/api/user",
+        headers=headers,
+        json={
+            "user": {"bio": "Article author", "image": "https://example.com/avatar.png"}
+        },
+    )
+    assert updated_profile.status_code == status.HTTP_200_OK
+    for target, follower_token in (
+        (other_name, token),
+        (author_name, other_token),
+    ):
+        followed = client.post(
+            f"/api/profiles/{target}/follow",
+            headers={"Authorization": f"Token {follower_token}"},
+        )
+        assert followed.status_code == status.HTTP_200_OK
+
+    created = _create_article(client, token, "Author public fields")
+    updated = _update_article(
+        client, token, str(created["slug"]), {"body": "Updated body"}
+    )
+    expected_author = {
+        "username": author_name,
+        "bio": "Article author",
+        "image": "https://example.com/avatar.png",
+        "following": False,
+    }
+    assert created["author"] == expected_author
+    assert updated["author"] == expected_author
+
+
+@pytest.mark.parametrize("authorization", ["", "Token invalid"])
+@pytest.mark.parametrize("article_exists", [True, False], ids=["existing", "missing"])
+def test_article_read_rejects_invalid_auth_before_article_lookup(
+    client: TestClient, authorization: str, article_exists: bool
+) -> None:
+    """인증 헤더가 비어 있거나 토큰이 잘못되면 게시글 존재 여부와 관계없이 조회를 401로 거부한다."""
+    _, token = _register_user(client)
+    slug = (
+        str(_create_article(client, token, "Optional authentication")["slug"])
+        if article_exists
+        else f"unknown-{uuid4().hex}"
+    )
+    response = client.get(
+        f"/api/articles/{slug}", headers={"Authorization": authorization}
+    )
+    assert response.status_code == status.HTTP_401_UNAUTHORIZED
+    assert response.json() == {"errors": {"token": ["is invalid"]}}
+
+
 def test_same_title_articles_have_distinct_retrievable_slugs(
     client: TestClient,
 ) -> None:

@@ -60,17 +60,93 @@ def _create_comment(
     return cast(dict[str, object], response.json()["comment"])
 
 
+@pytest.fixture
+def comments_with_followed_author(
+    client: TestClient,
+) -> tuple[str, str, str, list[dict[str, object]]]:
+    _, viewer_token = _register_user(client)
+    followed_author, followed_author_token = _register_user(client)
+    _, other_author_token = _register_user(client)
+    article = _create_article(client, other_author_token)
+    slug = cast(str, article["slug"])
+    comments = [
+        _create_comment(client, followed_author_token, slug, "Followed user's comment"),
+        _create_comment(client, other_author_token, slug, "Another user's comment"),
+    ]
+    followed = client.post(
+        f"/api/profiles/{followed_author}/follow",
+        headers={"Authorization": f"Token {viewer_token}"},
+    )
+    assert followed.status_code == status.HTTP_200_OK
+    assert followed.json()["profile"]["following"] is True
+    return slug, followed_author, viewer_token, comments
+
+
+def test_comment_following_depends_on_whether_the_viewer_follows_each_comment_author(
+    client: TestClient,
+    comments_with_followed_author: tuple[str, str, str, list[dict[str, object]]],
+) -> None:
+    """각 댓글은 조회자가 그 댓글 작성자를 팔로우하는지에 따라 following을 반환하고, 익명이면 모두 false다."""
+    slug, _, viewer_token, comments = comments_with_followed_author
+    _, unrelated_token = _register_user(client)
+
+    for headers, expected_following in (
+        ({"Authorization": f"Token {viewer_token}"}, True),
+        ({"Authorization": f"Token {unrelated_token}"}, False),
+        ({}, False),
+    ):
+        response = client.get(f"/api/articles/{slug}/comments", headers=headers)
+        expected_comments = [
+            comments[0]
+            | {
+                "author": cast(dict[str, object], comments[0]["author"])
+                | {"following": expected_following}
+            },
+            comments[1],
+        ]
+        # 게시글 작성자는 두 번째 댓글 작성자이며 조회자가 팔로우하지 않는다.
+        assert response.status_code == status.HTTP_200_OK
+        assert response.json() == {"comments": expected_comments}
+
+
+def test_unfollowing_comment_author_changes_following_without_changing_comments(
+    client: TestClient,
+    comments_with_followed_author: tuple[str, str, str, list[dict[str, object]]],
+) -> None:
+    """댓글 작성자의 팔로우를 해제하면 새 조회에서 following=false가 되고, 기존 댓글 내용과 식별자는 유지된다."""
+    slug, followed_author, viewer_token, comments = comments_with_followed_author
+    headers = {"Authorization": f"Token {viewer_token}"}
+    before = client.get(f"/api/articles/{slug}/comments", headers=headers)
+    assert before.status_code == status.HTTP_200_OK
+    assert before.json()["comments"][0]["author"]["following"] is True
+
+    unfollowed = client.delete(
+        f"/api/profiles/{followed_author}/follow", headers=headers
+    )
+    assert unfollowed.status_code == status.HTTP_200_OK
+    assert unfollowed.json()["profile"]["following"] is False
+    reread = client.get(f"/api/articles/{slug}/comments", headers=headers)
+    assert reread.status_code == status.HTTP_200_OK
+    assert reread.json() == {"comments": comments}
+
+
 def test_comment_on_another_users_article_is_public_and_scoped_to_article(
     client: TestClient,
 ) -> None:
     """다른 사용자도 댓글을 작성할 수 있고, 인증 없이 조회하면 해당 게시글의 댓글만 반환된다."""
     # Arrange
-    _, owner_token = _register_user(client)
+    owner_name, owner_token = _register_user(client)
     commenter_name, commenter_token = _register_user(client)
     first = _create_article(client, owner_token)
     second = _create_article(client, owner_token)
     first_slug = cast(str, first["slug"])
     second_slug = cast(str, second["slug"])
+    followed = client.post(
+        f"/api/profiles/{owner_name}/follow",
+        headers={"Authorization": f"Token {commenter_token}"},
+    )
+    assert followed.status_code == status.HTTP_200_OK
+    assert followed.json()["profile"]["following"] is True
 
     # Act
     initially_empty = client.get(f"/api/articles/{first_slug}/comments")

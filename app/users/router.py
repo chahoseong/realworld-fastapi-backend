@@ -1,13 +1,16 @@
 from fastapi import APIRouter, status
-from sqlalchemy import select
+from sqlalchemy import delete, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
 
 from app.config import get_settings
 from app.database import SessionDep
 from app.errors import ApiError
 from app.security import create_access_token, hash_password, verify_password
 from app.users.auth import CurrentUserDep, OptionalUserDep
-from app.users.models import User
+from app.users.follows import is_following
+from app.users.models import User, UserFollow
 from app.users.schemas import (
     LoginUserRequest,
     NewUserRequest,
@@ -163,17 +166,77 @@ def update_current_user(
 def get_profile(
     username: str,
     session: SessionDep,
-    _viewer: OptionalUserDep,
+    viewer: OptionalUserDep,
 ) -> ProfileResponse:
+    user = _find_profile(session, username)
+    return _profile_response(
+        user, is_following(session, viewer.id if viewer else None, user.id)
+    )
+
+
+def _find_profile(session: Session, username: str) -> User:
     user = session.scalar(select(User).where(User.username == username))
     if user is None:
         raise ApiError(status.HTTP_404_NOT_FOUND, {"profile": ["not found"]})
+    return user
 
+
+def _profile_response(user: User, following: bool) -> ProfileResponse:
     return ProfileResponse(
         profile=ProfilePayload(
             username=user.username,
             bio=user.bio,
             image=user.image,
-            following=False,
+            following=following,
         )
     )
+
+
+def _set_following(
+    session: Session, follower: User, username: str, following: bool
+) -> ProfileResponse:
+    target = _find_profile(session, username)
+    if follower.id == target.id:
+        raise ApiError(
+            status.HTTP_422_UNPROCESSABLE_CONTENT,
+            {"profile": ["can't follow or unfollow yourself"]},
+        )
+
+    try:
+        if following:
+            session.execute(
+                insert(UserFollow)
+                .values(follower_id=follower.id, followed_id=target.id)
+                .on_conflict_do_nothing(
+                    index_elements=[UserFollow.follower_id, UserFollow.followed_id]
+                )
+            )
+        else:
+            session.execute(
+                delete(UserFollow).where(
+                    UserFollow.follower_id == follower.id,
+                    UserFollow.followed_id == target.id,
+                )
+            )
+        response = _profile_response(target, following)
+        session.commit()
+        return response
+    except Exception:
+        session.rollback()
+        raise
+
+
+@router.post("/profiles/{username}/follow")
+def follow_profile(
+    username: str, current_user: CurrentUserDep, session: SessionDep
+) -> ProfileResponse:
+    follower, _ = current_user
+    return _set_following(session, follower, username, True)
+
+
+@router.delete("/profiles/{username}/follow")
+def unfollow_profile(
+    username: str, current_user: CurrentUserDep, session: SessionDep
+) -> ProfileResponse:
+    follower, _ = current_user
+    return _set_following(session, follower, username, False)

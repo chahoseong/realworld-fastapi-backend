@@ -7,7 +7,7 @@ from app.articles.models import Article, ArticleTag, Tag  # noqa: F401
 from app.comments.models import Comment  # noqa: F401
 from app.config import get_settings
 from app.database import Base
-from app.users.models import User  # noqa: F401
+from app.users.models import User, UserFollow  # noqa: F401
 
 config = context.config
 

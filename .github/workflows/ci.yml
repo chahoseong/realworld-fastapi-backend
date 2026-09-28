@@ -155,20 +155,18 @@ jobs:
             --variable "uid=$HURL_UID" \
             tests/api/hurl/errors_auth.hurl
 
-      - name: Run profile read contract
+      - name: Run profile contract
         run: |
           hurl --test --jobs 1 --no-cookie-store \
             --variable "host=$API_ORIGIN" \
             --variable "uid=$HURL_UID" \
-            --to-entry 4 \
             tests/api/hurl/profiles.hurl
 
-      - name: Run profile not-found contract
+      - name: Run profile error contract
         run: |
           hurl --test --jobs 1 --no-cookie-store \
             --variable "host=$API_ORIGIN" \
             --variable "uid=$HURL_UID" \
-            --to-entry 1 \
             tests/api/hurl/errors_profiles.hurl
 
       - name: Run article creation contract

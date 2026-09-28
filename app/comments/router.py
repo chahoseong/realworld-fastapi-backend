@@ -15,13 +15,14 @@ from app.comments.schemas import (
 from app.database import SessionDep
 from app.errors import ApiError
 from app.users.auth import CurrentUserDep, OptionalUserDep
+from app.users.follows import is_following
 from app.users.models import User
 from app.users.schemas import ProfilePayload
 
 router = APIRouter(prefix="/api", tags=["comments"])
 
 
-def _comment_payload(comment: Comment, author: User) -> CommentPayload:
+def _comment_payload(comment: Comment, author: User, following: bool) -> CommentPayload:
     return CommentPayload(
         id=comment.id,
         body=comment.body,
@@ -31,7 +32,7 @@ def _comment_payload(comment: Comment, author: User) -> CommentPayload:
             username=author.username,
             bio=author.bio,
             image=author.image,
-            following=False,
+            following=following,
         ),
     )
 
@@ -59,7 +60,9 @@ def create_comment(
     try:
         session.add(comment)
         session.flush()
-        response = CommentResponse(comment=_comment_payload(comment, author))
+        response = CommentResponse(
+            comment=_comment_payload(comment, author, following=False)
+        )
         session.commit()
         return response
     except Exception:
@@ -70,7 +73,7 @@ def create_comment(
 @router.get("/articles/{slug}/comments")
 def list_comments(
     slug: str,
-    _viewer: OptionalUserDep,
+    viewer: OptionalUserDep,
     session: SessionDep,
 ) -> CommentsResponse:
     article = find_article_by_public_slug(session, slug)
@@ -84,7 +87,16 @@ def list_comments(
         .order_by(Comment.id)
     ).all()
     return CommentsResponse(
-        comments=[_comment_payload(comment, author) for comment, author in rows]
+        comments=[
+            _comment_payload(
+                comment,
+                author,
+                following=is_following(
+                    session, viewer.id if viewer else None, author.id
+                ),
+            )
+            for comment, author in rows
+        ]
     )
 
 

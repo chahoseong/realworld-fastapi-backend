@@ -19,7 +19,8 @@ from app.articles.schemas import (
 )
 from app.database import SessionDep
 from app.errors import ApiError
-from app.users.auth import CurrentUserDep
+from app.users.auth import CurrentUserDep, OptionalUserDep
+from app.users.follows import is_following
 from app.users.models import User
 
 router = APIRouter(prefix="/api", tags=["articles"])
@@ -32,7 +33,7 @@ def _new_slug(title: str, public_id: UUID) -> str:
 
 
 def _article_response(
-    article: Article, author: User, tag_names: list[str]
+    article: Article, author: User, tag_names: list[str], following: bool
 ) -> ArticleResponse:
     return ArticleResponse(
         article=ArticlePayload(
@@ -49,7 +50,7 @@ def _article_response(
                 username=author.username,
                 bio=author.bio,
                 image=author.image,
-                following=False,
+                following=following,
             ),
         )
     )
@@ -144,7 +145,9 @@ def create_article(
                     )
                 )
 
-            response = _article_response(article, author, request.article.tagList)
+            response = _article_response(
+                article, author, request.article.tagList, following=False
+            )
             session.commit()
             return response
         except IntegrityError as exception:
@@ -167,14 +170,21 @@ def create_article(
 
 
 @router.get("/articles/{slug}")
-def get_article(slug: str, session: SessionDep) -> ArticleResponse:
+def get_article(
+    slug: str, viewer: OptionalUserDep, session: SessionDep
+) -> ArticleResponse:
     article = find_article_by_public_slug(session, slug)
     if article is None:
         raise ApiError(status.HTTP_404_NOT_FOUND, {"article": ["not found"]})
 
     author = session.get(User, article.author_id)
     assert author is not None
-    return _article_response(article, author, _article_tag_names(session, article.id))
+    return _article_response(
+        article,
+        author,
+        _article_tag_names(session, article.id),
+        following=is_following(session, viewer.id if viewer else None, author.id),
+    )
 
 
 @router.put("/articles/{slug}")
@@ -218,7 +228,7 @@ def update_article(
             article.updated_at = max(
                 datetime.now(UTC), article.updated_at + timedelta(microseconds=1)
             )
-            response = _article_response(article, author, tag_names)
+            response = _article_response(article, author, tag_names, following=False)
             session.commit()
             return response
         except IntegrityError as exception:

@@ -9,6 +9,7 @@
 | FastAPI Application     | 프로필 라우터와 오류 처리기를 연결한다.                                    | [`app/main.py::app`](../../../app/main.py)                                                                              |
 | Profile Endpoint        | 경로의`username`으로 대상 사용자를 조회하고 공개 프로필 응답을 구성한다. | [`app/users/router.py::get_profile()`](../../../app/users/router.py)                                                    |
 | Optional Authentication | 헤더가 없으면 익명 요청을 허용하고, 있으면 토큰으로 요청자를 식별한다.     | [`app/users/auth.py::get_optional_user(), OptionalUserDep`](../../../app/users/auth.py)                                 |
+| Follow Lookup           | 조회자가 대상 사용자를 팔로우하는지 저장된 관계로 확인한다. | [`app/users/follows.py::is_following()`](../../../app/users/follows.py) |
 | Security                | 전달된 JWT의 서명과 만료를 검증한다.                                       | [`app/security.py::decode_access_token()`](../../../app/security.py)                                                    |
 | Persistence             | 요청자 인증과 대상 프로필 조회에 필요한 사용자를 DB에서 찾는다.            | [`app/database.py::SessionDep`](../../../app/database.py), [`app/users/models.py::User`](../../../app/users/models.py) |
 | Profile Response Schema | `username`, `bio`, `image`, `following`만 응답에 담는다.           | [`app/users/schemas.py::ProfilePayload, ProfileResponse`](../../../app/users/schemas.py)                                |
@@ -35,11 +36,17 @@ sequenceDiagram
         Auth->>Auth: 토큰 검증·사용자 확인
         Auth-->>App: viewer: User
     end
-    App->>Endpoint: get_profile(username, session, _viewer)
+    App->>Endpoint: get_profile(username, session, viewer)
     Endpoint->>Session: username으로 대상 사용자 조회
     Session->>Database: SELECT user
     Database-->>Session: 대상 사용자
     Session-->>Endpoint: 대상 사용자
+    opt 인증된 조회자
+        Endpoint->>Session: 조회자와 대상 사용자의 팔로우 관계 확인
+        Session->>Database: SELECT user_follows BY follower_id, followed_id
+    end
     Endpoint-->>App: ProfileResponse (공개 필드)
     App-->>Client: 200 OK
 ```
+
+공개 필드는 `username`, `bio`, `image`, `following`이다. `following`은 조회자가 대상 사용자를 팔로우하는지 나타내며, 익명이거나 해당 관계가 없으면 `false`다.
