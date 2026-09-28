@@ -2,100 +2,91 @@
 
 인증된 작성자가 `PUT /api/articles/{slug}`로 게시글을 수정하거나 `DELETE /api/articles/{slug}`로 삭제하는 흐름을 설명한다.
 
-## Component Responsibilities
+## 컴포넌트와 책임
 
-| 컴포넌트            | 책임                                                       | 코드 위치                                                                                                    |
-| ------------------- | ---------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| FastAPI Application | 게시글 라우터를 HTTP 요청에 연결한다.                      | [`app/main.py`](../../../app/main.py)                                                                       |
-| Authentication      | 토큰으로 요청자를 식별한다.                                | [`app/users/auth.py`](../../../app/users/auth.py)                                                           |
-| API Schemas         | 수정 요청의 필드를 검증하고 공개 응답의 형태를 정한다.     | [`app/articles/schemas.py`](../../../app/articles/schemas.py)                                               |
-| Articles Endpoint   | 작성자 권한을 확인하고 수정·삭제 및 태그 정리를 조정한다. | [`app/articles/router.py`](../../../app/articles/router.py)                                                 |
-| Persistence         | 게시글·태그 관계를 저장하고 한 트랜잭션으로 확정한다.     | [`app/articles/models.py`](../../../app/articles/models.py), [`app/database.py`](../../../app/database.py) |
-| Favorite Lookup     | 수정 응답에 작성자의 즐겨찾기 여부와 해당 게시글을 즐겨찾기한 사용자 수를 반영한다. | [`app/articles/favorites.py`](../../../app/articles/favorites.py) |
-| PostgreSQL          | 게시글 삭제 시 연결된 댓글과 즐겨찾기를 연쇄 삭제한다. | [`0004_create_comments.py`](../../../migrations/versions/0004_create_comments.py), [`0006_create_article_favorites.py`](../../../migrations/versions/0006_create_article_favorites.py) |
+| 컴포넌트 | 책임 | 코드 위치 |
+| --- | --- | --- |
+| FastAPI Application | 게시글 라우터를 HTTP 요청에 연결한다. | [`app/main.py`](../../../app/main.py) |
+| Authentication | 토큰으로 요청자를 식별한다. | [`CurrentUserDep`](../../../app/users/auth.py) |
+| API Schemas | 수정 요청의 필드를 검증하고 공개 응답의 형태를 정한다. | [`UpdateArticleRequest, ArticleResponse`](../../../app/articles/schemas.py) |
+| Articles Endpoint | 작성자 권한을 확인하고 수정·삭제 및 태그 정리를 조정한다. | [`update_article(), delete_article(), _replace_article_tags()`](../../../app/articles/router.py) |
+| Persistence | 게시글·태그 관계를 저장하고 한 트랜잭션으로 확정한다. | [`app/articles/models.py`](../../../app/articles/models.py), [`app/database.py`](../../../app/database.py) |
+| Favorite Lookup | 수정 응답에 작성자의 즐겨찾기 여부와 해당 게시글을 즐겨찾기한 사용자 수를 반영한다. | [`favorite_state()`](../../../app/articles/favorites.py) |
+| PostgreSQL | 게시글 삭제 시 연결된 댓글과 즐겨찾기를 연쇄 삭제한다. | [`0004_create_comments.py`](../../../migrations/versions/0004_create_comments.py), [`0006_create_article_favorites.py`](../../../migrations/versions/0006_create_article_favorites.py) |
 
-## Runtime View
+인증의 상세 흐름은 [본인 정보 조회 흐름](user-retrieval.md)을 참고한다.
+
+## 실행 흐름
+
+다이어그램은 정상 처리의 주요 단계를 보여준다.
 
 ### 시나리오: 게시글 수정
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Client
+    actor Client as 요청자
     participant App as FastAPI Application
     participant Auth as Authentication
     participant Endpoint as Articles Endpoint
-    participant Session as SQLAlchemy Session
     participant DB as PostgreSQL
 
     Client->>App: PUT /api/articles/{slug} (토큰, 수정할 필드)
-    App->>Auth: 토큰으로 현재 사용자 확인
-    Auth-->>App: 요청자 User
-    Note over App,Endpoint: 요청 검증을 통과한 뒤 Endpoint 실행
-    App->>Endpoint: update_article(request, current_user, session)
-    Endpoint->>Session: 저장된 slug로 게시글 조회·잠금
-    Session->>DB: SELECT articles FOR UPDATE
+    App->>Auth: 토큰으로 요청자 확인
+    Auth-->>App: 요청자
+    Note over App: 인증과 입력 검증을 통과한 뒤 처리
+    App->>Endpoint: 게시글 수정 요청
+    Endpoint->>DB: 현재 slug로 게시글 조회 및 잠금
     DB-->>Endpoint: 게시글
-    Endpoint->>Endpoint: 요청자와 작성자 확인, 전달된 필드만 변경
+    Endpoint->>Endpoint: 요청자가 게시글 작성자인지 확인
+    Endpoint->>Endpoint: 전달된 필드와 수정 시각 갱신
     opt 제목이 변경됨
-        Endpoint->>Endpoint: 기존 public_id로 새 slug 생성
+        Endpoint->>Endpoint: 게시글 식별자를 유지하며 조회 주소 갱신
     end
-    opt tagList가 전달됨
-        Endpoint->>Session: 태그 연결을 입력 순서대로 교체
-        Session->>DB: 기존 연결 삭제, 필요한 태그·새 연결 저장
-        opt 기존 태그를 다른 게시글에서 사용하지 않음
-            Endpoint->>Session: 더 이상 쓰지 않는 태그 정리
-            Session->>DB: DELETE tags
-        end
+    opt 태그가 전달됨
+        Endpoint->>DB: 태그 연결 교체와 사용하지 않는 태그 정리
     end
-    Endpoint->>Endpoint: updated_at 갱신
-    Endpoint->>Session: 작성자의 즐겨찾기 여부와 해당 게시글의 즐겨찾기 개수 조회
-    Session->>DB: SELECT article_favorites 집계
-    Endpoint->>Endpoint: ArticleResponse 구성
-    Endpoint->>Session: commit
-    Session->>DB: 게시글 변경 확정·COMMIT
-    Endpoint-->>Client: 200 OK (현재 slug 포함)
+    Endpoint->>DB: 수정 응답에 필요한 태그·즐겨찾기 상태 확인
+    DB-->>Endpoint: 응답 정보
+    Endpoint->>Endpoint: 수정한 게시글로 응답 구성
+    Endpoint->>DB: 게시글과 태그 변경을 함께 커밋
+    DB-->>Endpoint: 저장 확정
+    Endpoint-->>App: 수정 응답
+    App-->>Client: 200 OK (현재 slug 포함)
 ```
 
 - 수정 요청에 없는 `title`, `description`, `body`는 유지된다. `tagList`를 보내지 않으면 기존 태그 연결도 유지하고, 보내면 해당 목록과 순서로 교체한다.
-- 제목이 바뀌면 `slug`의 제목 부분을 다시 만들지만 `public_id`는 그대로 둔다. 공개 조회는 이 UUID 접미부로 게시글을 찾으므로 제목 변경 전 링크도 같은 게시글을 조회한다.
-- 태그 이름은 게시글 간에 공유한다. 기존 태그 중 다른 게시글에서 계속 쓰는 이름은 남기고, 어느 게시글에서도 쓰지 않는 이름만 삭제한다. 게시글 변경과 태그 정리는 함께 커밋한다.
-- 수정 응답의 작성자에는 공개 필드만 담긴다. 수정은 작성자 자신만 가능하고 자기 자신을 팔로우할 수 없으므로 `author.following`은 `false`다.
-- 즐겨찾기는 변경되지 않는 내부 게시글 ID에 연결된다. 본문·제목·slug를 수정해도 관계는 유지되며, 수정 응답의 `favorited`는 작성자 자신의 즐겨찾기 여부, `favoritesCount`는 해당 게시글을 즐겨찾기한 사용자 수를 나타낸다.
+- 제목이 바뀌어도 게시글 식별자는 유지되어 이전 링크로 같은 게시글을 조회할 수 있다. 수정·삭제 요청은 현재 `slug`를 사용한다.
+- 태그 이름은 게시글 간에 공유하므로, 다른 게시글에서 계속 사용하는 이름은 남긴다. 게시글 변경과 태그 정리는 함께 확정된다.
+- 요청자가 게시글 작성자가 아니면 수정·삭제를 진행하지 않는다. 수정 응답의 `author.following`은 자기 자신에 대한 팔로우 여부이므로 `false`다.
+- 제목이나 내용을 수정해도 같은 게시글에 등록된 즐겨찾기는 유지된다. 수정 응답에도 작성자 자신의 즐겨찾기 여부와 해당 게시글을 즐겨찾기한 사용자 수를 반영한다.
 
 ### 시나리오: 게시글 삭제
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Client
+    actor Client as 요청자
     participant App as FastAPI Application
     participant Auth as Authentication
     participant Endpoint as Articles Endpoint
-    participant Session as SQLAlchemy Session
     participant DB as PostgreSQL
 
     Client->>App: DELETE /api/articles/{slug} (토큰)
-    App->>Auth: 토큰으로 현재 사용자 확인
-    Auth-->>App: 요청자 User
-    App->>Endpoint: delete_article(slug, current_user, session)
-    Endpoint->>Session: 저장된 slug로 게시글 조회·잠금
-    Session->>DB: SELECT articles FOR UPDATE
+    App->>Auth: 토큰으로 요청자 확인
+    Auth-->>App: 요청자
+    App->>Endpoint: 게시글 삭제 요청
+    Endpoint->>DB: 현재 slug로 게시글 조회 및 잠금
     DB-->>Endpoint: 게시글
-    Endpoint->>Endpoint: 요청자와 작성자 확인
-    Endpoint->>Session: 해당 게시글의 태그 연결 제거
-    Session->>DB: DELETE article_tags
-    opt 제거한 태그를 다른 게시글에서 사용하지 않음
-        Endpoint->>Session: 더 이상 쓰지 않는 태그 정리
-        Session->>DB: DELETE tags
-    end
-    Endpoint->>Session: 게시글 삭제·commit
-    Session->>DB: DELETE articles
-    DB->>DB: 연결된 comments, article_favorites 연쇄 삭제
-    Session->>DB: COMMIT
-    Endpoint-->>Client: 204 No Content
+    Endpoint->>Endpoint: 요청자가 게시글 작성자인지 확인
+    Endpoint->>DB: 태그 연결 제거와 사용하지 않는 태그 정리
+    Endpoint->>DB: 게시글 삭제
+    Note over DB: 해당 게시글의 댓글과 즐겨찾기도 함께 삭제
+    Endpoint->>DB: 커밋
+    DB-->>Endpoint: 삭제 확정
+    Endpoint-->>App: 삭제 완료
+    App-->>Client: 204 No Content
 ```
 
-- 삭제 전에 해당 게시글의 태그 연결을 제거한다. 공유 중인 태그 이름은 남기고, 마지막 연결이 사라진 태그 이름만 정리한다.
-- 게시글 삭제와 함께 해당 댓글과 즐겨찾기는 DB의 `ON DELETE CASCADE`로 삭제된다. 다른 게시글의 댓글·즐겨찾기와 사용자 정보는 유지된다. 태그 정리와 게시글·댓글·즐겨찾기 삭제는 같은 트랜잭션에서 확정된다.
+- 해당 게시글의 댓글·즐겨찾기와 사용하지 않는 태그까지 함께 정리한다. 다른 게시글의 댓글·즐겨찾기, 공유 중인 태그와 사용자 정보는 유지된다.
 - 수정·삭제 저장 중 오류가 발생하면 롤백하여 변경 전 게시글과 관련 데이터를 유지한다.

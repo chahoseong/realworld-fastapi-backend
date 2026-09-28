@@ -1,20 +1,25 @@
 # Article Creation and Retrieval Flow
 
-이 문서는 인증된 사용자가 `POST /api/articles`로 게시글을 만들고, 생성된 `slug`로 누구나 `GET /api/articles/{slug}`를 조회하는 흐름을 설명한다.
+이 문서는 인증된 사용자가 게시글을 만들고, 누구나 단건 게시글을 조회하는 흐름을 설명한다. 조건에 맞는 목록 조회는 [게시글 목록 조회 흐름](article-list.md), 팔로우한 작성자의 글 조회는 [게시글 피드 조회 흐름](article-feed.md)을 참고한다.
 
-## Component Responsibilities
+## 컴포넌트와 책임
 
-| 컴포넌트            | 책임                                                                          | 코드 위치                                                                                                                  |
-| ------------------- | ----------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| FastAPI Application | 게시글 라우터와 오류 처리기를 연결한다.                                       | [`app/main.py`](../../../app/main.py)                                                                                     |
-| Authentication      | 작성 요청은 인증을 요구한다. 조회는 익명으로 허용하고, 헤더가 있으면 토큰을 검증한다. | [`app/users/auth.py`](../../../app/users/auth.py)                                                                         |
-| Follow Lookup       | 조회자가 작성자를 팔로우하는지 저장된 관계로 확인한다. | [`app/users/follows.py`](../../../app/users/follows.py) |
-| API Schemas         | 생성 요청의 필수 필드와 빈 문자열을 검증하고 공개 응답의 형태를 정의한다.     | [`app/articles/schemas.py`](../../../app/articles/schemas.py)                                                             |
-| Articles Endpoint   | `slug` 생성, 게시글·태그 저장, 공개 조회와 응답 구성을 조정한다.           | [`app/articles/router.py`](../../../app/articles/router.py), [`app/articles/lookup.py`](../../../app/articles/lookup.py) |
-| Persistence         | 게시글과 태그를 저장하고 관계를 조회한다.                                     | [`app/articles/models.py`](../../../app/articles/models.py), [`app/database.py`](../../../app/database.py)               |
-| Error Handling      | 인증·입력·조회 오류를 API 오류 응답으로 변환한다.                           | [`app/errors.py`](../../../app/errors.py)                                                                                 |
+| 컴포넌트 | 책임 | 코드 위치 |
+| --- | --- | --- |
+| FastAPI Application | 게시글 라우터와 오류 처리기를 연결한다. | [`app/main.py`](../../../app/main.py) |
+| Authentication | 작성 요청은 인증을 요구한다. 조회는 익명으로 허용하고, 헤더가 있으면 토큰을 검증한다. | [`CurrentUserDep, OptionalUserDep`](../../../app/users/auth.py) |
+| Favorite Lookup | 조회자의 즐겨찾기 여부와 게시글의 즐겨찾기 사용자 수를 확인한다. | [`favorite_state()`](../../../app/articles/favorites.py) |
+| Follow Lookup | 조회자가 작성자를 팔로우하는지 저장된 관계로 확인한다. | [`is_following()`](../../../app/users/follows.py) |
+| API Schemas | 생성 요청의 필수 필드와 빈 문자열을 검증하고 공개 응답의 형태를 정의한다. | [`NewArticleRequest, ArticleResponse`](../../../app/articles/schemas.py) |
+| Articles Endpoint | `slug` 생성, 게시글·태그 저장, 공개 조회와 응답 구성을 조정한다. | [`create_article(), get_article()`](../../../app/articles/router.py), [`find_article_by_public_slug()`](../../../app/articles/lookup.py) |
+| Persistence | 게시글과 태그를 저장하고 관계를 조회한다. | [`app/articles/models.py`](../../../app/articles/models.py), [`app/database.py`](../../../app/database.py) |
+| Error Handling | 인증·입력·조회 오류를 API 오류 응답으로 변환한다. | [`app/errors.py`](../../../app/errors.py) |
 
-## Runtime View
+인증의 상세 흐름은 [본인 정보 조회 흐름](user-retrieval.md)을 참고한다.
+
+## 실행 흐름
+
+다이어그램은 정상 처리의 주요 단계를 보여준다.
 
 ### 시나리오: 게시글 생성
 
@@ -25,65 +30,62 @@ sequenceDiagram
     participant App as FastAPI Application
     participant Auth as Authentication
     participant Endpoint as Articles Endpoint
-    participant Session as SQLAlchemy Session
     participant DB as PostgreSQL
 
-    Client->>App: POST /api/articles (토큰, article 입력)
-    App->>Auth: 토큰으로 현재 사용자 확인
-    Auth-->>App: 작성자 User
-    Note over App,Endpoint: 인증과 요청 검증이 모두 통과한 뒤 Endpoint 실행
-    App->>Endpoint: create_article(request, current_user, session)
-    Endpoint->>Endpoint: UUID4 public_id와 제목 기반 slug 생성
-    Endpoint->>Session: 게시글 추가·flush
-    Session->>DB: INSERT articles
-    DB-->>Session: 게시글 id
-    opt tagList에 태그가 있음
-        Endpoint->>Session: 태그 이름별 조회 및 순서대로 연결
-        Session->>DB: SELECT tags
-        opt 기존에 없는 태그가 있음
-            Session->>DB: INSERT tags
-        end
-        Session->>DB: INSERT article_tags
+    Client->>App: POST /api/articles (토큰, 게시글 입력)
+    App->>Auth: 토큰으로 작성자 확인
+    Auth-->>App: 작성자
+    Note over App: 인증과 입력 검증을 통과한 뒤 처리
+    App->>Endpoint: 게시글 생성 요청
+    Endpoint->>Endpoint: 게시글 식별자와 조회 주소 생성
+    Endpoint->>DB: 작성자와 게시글을 연결하여 저장 준비
+    opt 태그가 있음
+        Endpoint->>DB: 태그를 재사용 또는 생성하고 입력 순서대로 연결
     end
-    Endpoint->>Endpoint: ArticleResponse 구성
-    Endpoint->>Session: commit
-    Session->>DB: COMMIT
-    Endpoint-->>Client: 201 Created (slug 포함)
+    Endpoint->>Endpoint: 생성한 게시글로 응답 구성
+    Endpoint->>DB: 게시글과 태그 연결을 함께 커밋
+    DB-->>Endpoint: 저장 확정
+    Endpoint-->>App: 생성 응답
+    App-->>Client: 201 Created (slug 포함)
 ```
 
-- 인증된 사용자의 ID가 작성자로 저장된다. 생성 시 `public_id`로 UUID4를 저장하고, 제목을 가공한 부분에 UUID의 32자리 16진수 표현을 붙여 고유한 `slug`를 만든다.
-- `tagList`를 생략하면 빈 목록을 사용한다. 태그 이름은 공용 `tags` 테이블에서 찾아 재사용하거나 새로 만들고, `article_tags.position`에 입력 순서를 기록한다. 생성 응답의 `tagList`도 이 순서를 따른다.
-- 게시글과 태그 연결 및 응답 구성이 완료된 뒤 한 번에 커밋한다.
+- 작성자는 인증으로 확인한 사용자로 결정된다.
+- 태그는 게시글 간에 공유하며, 응답에서는 입력한 순서를 유지한다. 태그를 생략하면 빈 목록이다.
+- 응답 구성까지 성공한 경우에만 게시글과 태그 연결의 저장을 함께 확정한다.
 
 ### 시나리오: 게시글 조회
 
 ```mermaid
 sequenceDiagram
     autonumber
-    actor Client
+    actor Client as 조회자
     participant App as FastAPI Application
     participant Auth as Optional Authentication
     participant Endpoint as Articles Endpoint
-    participant Session as SQLAlchemy Session
     participant DB as PostgreSQL
 
     Client->>App: GET /api/articles/{slug}
     opt Authorization 헤더가 있음
         App->>Auth: 토큰으로 조회자 확인
-        Auth-->>App: 조회자 User
+        Auth-->>App: 조회자
     end
-    App->>Endpoint: get_article(slug, viewer, session)
-    Endpoint->>Session: slug의 UUID 접미부로 게시글 조회
-    Session->>DB: SELECT articles, users, ordered tags
-    DB-->>Endpoint: 게시글·작성자·태그
-    opt 인증된 조회자
-        Endpoint->>Session: 조회자와 작성자의 팔로우 관계 확인
-        Session->>DB: SELECT user_follows BY follower_id, followed_id
-    end
-    Endpoint-->>Client: 200 OK (ArticleResponse)
+    App->>Endpoint: 단건 게시글 조회 요청
+    Endpoint->>DB: 조회 주소의 식별자로 게시글 조회
+    DB-->>Endpoint: 게시글
+    Endpoint->>DB: 작성자·태그와 조회자의 즐겨찾기·팔로우 상태 확인
+    DB-->>Endpoint: 응답에 필요한 정보
+    Endpoint->>Endpoint: 조회자 상태를 반영한 게시글 응답 구성
+    Endpoint-->>App: 조회 응답
+    App-->>Client: 200 OK
 ```
 
-- 조회는 `slug` 끝의 UUID로 게시글을 찾는다. 조회 응답의 `tagList`는 저장된 `article_tags.position` 순서를 따른다.
-- 공개 응답의 작성자에는 `username`, `bio`, `image`, `following`만 담기며 이메일과 비밀번호 해시는 포함되지 않는다. 조회 시 `following`은 조회자가 작성자를 팔로우하는지 나타내며 익명이면 `false`다. 생성 응답은 요청자 자신이 작성자이므로 `false`다.
-- 단건 조회의 `favorited`는 조회자가 해당 게시글을 즐겨찾기했는지 나타내며, 익명이면 `false`다. `favoritesCount`는 그 게시글을 즐겨찾기한 전체 사용자 수다. 새 게시글 생성 응답은 아직 즐겨찾기가 없으므로 `false`와 `0`이다.
+- 조회 주소에서 변하지 않는 게시글 식별자를 사용하므로, 제목이 바뀌어도 이전 조회 링크가 같은 게시글을 가리킨다.
+- 작성자의 공개 정보만 응답에 담고 이메일·비밀번호 해시는 제외한다. `author.following`은 조회자가 작성자를 팔로우하는지 나타내며, 익명이면 `false`다.
+- `favorited`는 조회자가 해당 게시글을 즐겨찾기했는지, `favoritesCount`는 해당 게시글을 즐겨찾기한 사용자 수다. 익명의 `favorited`는 `false`다.
+- 새 게시글에는 즐겨찾기한 사용자가 없고 요청자가 작성자 자신이다. 따라서 생성 응답의 즐겨찾기 개수는 `0`이며, 즐겨찾기 여부와 작성자 팔로우 여부는 모두 `false`다.
 - 조회에 보낸 인증 헤더가 비어 있거나 토큰이 잘못되면 게시글 조회 전에 `401`을 반환한다. 인증 헤더가 없는 익명 조회는 허용한다.
+
+## 관련 문서
+
+- [게시글 목록 조회 흐름](article-list.md)
+- [게시글 피드 조회 흐름](article-feed.md)
