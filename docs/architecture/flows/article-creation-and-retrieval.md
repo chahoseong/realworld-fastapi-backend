@@ -84,5 +84,6 @@ sequenceDiagram
 ```
 
 - 조회는 `slug` 끝의 UUID로 게시글을 찾는다. 조회 응답의 `tagList`는 저장된 `article_tags.position` 순서를 따른다.
-- 공개 응답의 작성자에는 `username`, `bio`, `image`, `following`만 담기며 이메일과 비밀번호 해시는 포함되지 않는다. 조회 시 `following`은 조회자가 작성자를 팔로우하는지 나타내며 익명이면 `false`다. 생성 응답은 요청자 자신이 작성자이므로 `false`다. 현재 `favorited`는 `false`, `favoritesCount`는 `0`으로 반환한다.
+- 공개 응답의 작성자에는 `username`, `bio`, `image`, `following`만 담기며 이메일과 비밀번호 해시는 포함되지 않는다. 조회 시 `following`은 조회자가 작성자를 팔로우하는지 나타내며 익명이면 `false`다. 생성 응답은 요청자 자신이 작성자이므로 `false`다.
+- 단건 조회의 `favorited`는 조회자가 해당 게시글을 즐겨찾기했는지 나타내며, 익명이면 `false`다. `favoritesCount`는 그 게시글을 즐겨찾기한 전체 사용자 수다. 새 게시글 생성 응답은 아직 즐겨찾기가 없으므로 `false`와 `0`이다.
 - 조회에 보낸 인증 헤더가 비어 있거나 토큰이 잘못되면 게시글 조회 전에 `401`을 반환한다. 인증 헤더가 없는 익명 조회는 허용한다.

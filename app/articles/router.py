@@ -3,12 +3,14 @@ from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, status
-from sqlalchemy import select
+from sqlalchemy import delete, select
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from app.articles.favorites import favorite_state
 from app.articles.lookup import find_article_by_public_slug
-from app.articles.models import Article, ArticleTag, Tag
+from app.articles.models import Article, ArticleFavorite, ArticleTag, Tag
 from app.articles.schemas import (
     ArticleAuthor,
     ArticlePayload,
@@ -33,7 +35,12 @@ def _new_slug(title: str, public_id: UUID) -> str:
 
 
 def _article_response(
-    article: Article, author: User, tag_names: list[str], following: bool
+    article: Article,
+    author: User,
+    tag_names: list[str],
+    following: bool,
+    favorited: bool,
+    favorites_count: int,
 ) -> ArticleResponse:
     return ArticleResponse(
         article=ArticlePayload(
@@ -44,8 +51,8 @@ def _article_response(
             tagList=tag_names,
             createdAt=article.created_at,
             updatedAt=article.updated_at,
-            favorited=False,
-            favoritesCount=0,
+            favorited=favorited,
+            favoritesCount=favorites_count,
             author=ArticleAuthor(
                 username=author.username,
                 bio=author.bio,
@@ -146,7 +153,12 @@ def create_article(
                 )
 
             response = _article_response(
-                article, author, request.article.tagList, following=False
+                article,
+                author,
+                request.article.tagList,
+                following=False,
+                favorited=False,
+                favorites_count=0,
             )
             session.commit()
             return response
@@ -179,11 +191,15 @@ def get_article(
 
     author = session.get(User, article.author_id)
     assert author is not None
+    viewer_id = viewer.id if viewer else None
+    favorited, favorites_count = favorite_state(session, viewer_id, article.id)
     return _article_response(
         article,
         author,
         _article_tag_names(session, article.id),
-        following=is_following(session, viewer.id if viewer else None, author.id),
+        following=is_following(session, viewer_id, author.id),
+        favorited=favorited,
+        favorites_count=favorites_count,
     )
 
 
@@ -228,7 +244,14 @@ def update_article(
             article.updated_at = max(
                 datetime.now(UTC), article.updated_at + timedelta(microseconds=1)
             )
-            response = _article_response(article, author, tag_names, following=False)
+            response = _article_response(
+                article,
+                author,
+                tag_names,
+                following=False,
+                favorited=False,
+                favorites_count=0,
+            )
             session.commit()
             return response
         except IntegrityError as exception:
@@ -246,6 +269,67 @@ def update_article(
             raise
 
     raise AssertionError("unreachable")
+
+
+def _set_favorited(
+    session: Session, viewer: User, slug: str, favorited: bool
+) -> ArticleResponse:
+    article = session.scalar(
+        select(Article).where(Article.slug == slug).with_for_update()
+    )
+    if article is None:
+        raise ApiError(status.HTTP_404_NOT_FOUND, {"article": ["not found"]})
+
+    try:
+        if favorited:
+            session.execute(
+                insert(ArticleFavorite)
+                .values(user_id=viewer.id, article_id=article.id)
+                .on_conflict_do_nothing(
+                    index_elements=[ArticleFavorite.user_id, ArticleFavorite.article_id]
+                )
+            )
+        else:
+            session.execute(
+                delete(ArticleFavorite).where(
+                    ArticleFavorite.user_id == viewer.id,
+                    ArticleFavorite.article_id == article.id,
+                )
+            )
+        author = session.get(User, article.author_id)
+        assert author is not None
+        current_favorited, favorites_count = favorite_state(
+            session, viewer.id, article.id
+        )
+        response = _article_response(
+            article,
+            author,
+            _article_tag_names(session, article.id),
+            following=is_following(session, viewer.id, author.id),
+            favorited=current_favorited,
+            favorites_count=favorites_count,
+        )
+        session.commit()
+        return response
+    except Exception:
+        session.rollback()
+        raise
+
+
+@router.post("/articles/{slug}/favorite")
+def favorite_article(
+    slug: str, current_user: CurrentUserDep, session: SessionDep
+) -> ArticleResponse:
+    viewer, _ = current_user
+    return _set_favorited(session, viewer, slug, True)
+
+
+@router.delete("/articles/{slug}/favorite")
+def unfavorite_article(
+    slug: str, current_user: CurrentUserDep, session: SessionDep
+) -> ArticleResponse:
+    viewer, _ = current_user
+    return _set_favorited(session, viewer, slug, False)
 
 
 @router.delete("/articles/{slug}", status_code=status.HTTP_204_NO_CONTENT)

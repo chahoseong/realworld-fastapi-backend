@@ -41,3 +41,12 @@ class ArticleTag(Base):
     )
     position: Mapped[int] = mapped_column(primary_key=True)
     tag_id: Mapped[int] = mapped_column(ForeignKey("tags.id"), nullable=False)
+
+
+class ArticleFavorite(Base):
+    __tablename__ = "article_favorites"
+
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    article_id: Mapped[int] = mapped_column(
+        ForeignKey("articles.id", ondelete="CASCADE"), primary_key=True, index=True
+    )

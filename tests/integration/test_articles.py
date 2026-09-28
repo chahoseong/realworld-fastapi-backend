@@ -143,6 +143,59 @@ def test_unfollowing_article_author_changes_following_without_changing_article(
     assert reread.json() == {"article": article}
 
 
+def test_article_favorite_state_is_viewer_specific_and_count_includes_all_users(
+    client: TestClient,
+) -> None:
+    """게시글을 조회하면, 조회한 사용자가 해당 게시글을 즐겨찾기했는지 응답에 표시되며, 해당 게시글을 즐겨찾기한 사용자의 수가 표시된다."""
+    author_name, author_token = _register_user(client)
+    _, first_token = _register_user(client)
+    _, second_token = _register_user(client)
+    article = _create_article(
+        client, author_token, "Viewer favorites", [f"fav-{uuid4().hex}"]
+    )
+    followed = client.post(
+        f"/api/profiles/{author_name}/follow",
+        headers={"Authorization": f"Token {first_token}"},
+    )
+    assert followed.status_code == status.HTTP_200_OK
+
+    for method, token, first_favorited, second_favorited, expected_count in (
+        ("POST", first_token, True, False, 1),
+        ("POST", second_token, True, True, 2),
+        ("DELETE", first_token, False, True, 1),
+        ("DELETE", second_token, False, False, 0),
+    ):
+        changed = client.request(
+            method,
+            f"/api/articles/{article['slug']}/favorite",
+            headers={"Authorization": f"Token {token}"},
+        )
+        assert changed.status_code == status.HTTP_200_OK
+        for viewer_token, expected_favorited, expected_following in (
+            (first_token, first_favorited, True),
+            (second_token, second_favorited, False),
+            (None, False, False),
+        ):
+            expected_article = article | {
+                "favorited": expected_favorited,
+                "favoritesCount": expected_count,
+                "author": cast(dict[str, object], article["author"])
+                | {"following": expected_following},
+            }
+            reread = client.get(
+                f"/api/articles/{article['slug']}",
+                headers=(
+                    {"Authorization": f"Token {viewer_token}"}
+                    if viewer_token is not None
+                    else {}
+                ),
+            )
+            assert reread.status_code == status.HTTP_200_OK
+            assert reread.json() == {"article": expected_article}
+            if viewer_token == token:
+                assert changed.json() == {"article": expected_article}
+
+
 def test_article_creation_and_update_expose_the_authors_public_fields(
     client: TestClient,
 ) -> None:
