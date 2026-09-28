@@ -160,6 +160,59 @@ def filter_articles(
     return articles, tokens
 
 
+@pytest.fixture
+def feed_articles(
+    client: TestClient,
+    test_session_factory: sessionmaker[Session],
+) -> tuple[list[Article], dict[str, str]]:
+    """요청자별 팔로우, 반대 방향의 팔로우와 서로 다른 작성자의 게시글을 준비한다."""
+    articles = _store_articles(test_session_factory, [2, 0, 2, 1, 3, 4])
+    tokens = {username: _register(client, username) for username in ["viewer", "other"]}
+    with test_session_factory() as session:
+        writer = session.scalar(select(User).where(User.username == "writer"))
+        viewer = session.scalar(select(User).where(User.username == "viewer"))
+        other = session.scalar(select(User).where(User.username == "other"))
+        assert writer is not None and viewer is not None and other is not None
+        second_writer = User(
+            username="second_writer",
+            email="second_writer@example.com",
+            password_hash="not-for-login",
+            bio="Second writer bio",
+        )
+        unfollowed_writer = User(
+            username="unfollowed_writer",
+            email="unfollowed_writer@example.com",
+            password_hash="not-for-login",
+        )
+        first_tag = Tag(name="first")
+        second_tag = Tag(name="second")
+        session.add_all([second_writer, unfollowed_writer, first_tag, second_tag])
+        session.flush()
+        session.add_all(articles[2:])
+        for article in articles[2:4]:
+            article.author_id = second_writer.id
+        articles[4].author_id = unfollowed_writer.id
+        articles[5].author_id = viewer.id
+        session.add_all(
+            [
+                UserFollow(follower_id=viewer.id, followed_id=writer.id),
+                UserFollow(follower_id=viewer.id, followed_id=second_writer.id),
+                UserFollow(follower_id=other.id, followed_id=unfollowed_writer.id),
+                UserFollow(follower_id=unfollowed_writer.id, followed_id=viewer.id),
+                ArticleTag(article_id=articles[0].id, tag_id=second_tag.id, position=0),
+                ArticleTag(article_id=articles[0].id, tag_id=first_tag.id, position=1),
+                ArticleTag(article_id=articles[2].id, tag_id=first_tag.id, position=0),
+                ArticleFavorite(user_id=viewer.id, article_id=articles[0].id),
+                ArticleFavorite(user_id=viewer.id, article_id=articles[4].id),
+                ArticleFavorite(user_id=other.id, article_id=articles[0].id),
+                ArticleFavorite(user_id=other.id, article_id=articles[2].id),
+                ArticleFavorite(user_id=other.id, article_id=articles[5].id),
+            ]
+        )
+        session.commit()
+    return articles, tokens
+
+
 def test_article_list_orders_by_creation_time_and_id_descending(
     client: TestClient,
     test_session_factory: sessionmaker[Session],
@@ -475,6 +528,218 @@ def test_article_list_rejects_invalid_authentication(
     assert response.json() == {"errors": {"token": ["is invalid"]}}
 
 
+def test_feed_selects_only_articles_by_authors_the_viewer_follows(
+    client: TestClient,
+    feed_articles: tuple[list[Article], dict[str, str]],
+) -> None:
+    """피드는 조회한 사용자가 팔로우한 작성자의 게시글만 반환한다."""
+    articles, tokens = feed_articles
+    for username, expected_indices in [("viewer", [0, 1, 2, 3]), ("other", [4])]:
+        response = client.get(
+            "/api/articles/feed", headers={"Authorization": f"Token {tokens[username]}"}
+        )
+        assert response.status_code == 200
+        items = response.json()["articles"]
+        assert {item["slug"] for item in items} == {
+            articles[index].slug for index in expected_indices
+        }
+        assert len(items) == len(expected_indices)
+
+
+def test_feed_orders_by_creation_time_and_id_descending(
+    client: TestClient,
+    feed_articles: tuple[list[Article], dict[str, str]],
+) -> None:
+    """피드는 최신 작성 순으로 조회되며, 작성 시각이 같으면 내부 게시글 ID가 큰 글부터 나온다."""
+    articles, tokens = feed_articles
+    response = client.get(
+        "/api/articles/feed", headers={"Authorization": f"Token {tokens['viewer']}"}
+    )
+    assert response.status_code == 200
+    assert [item["slug"] for item in response.json()["articles"]] == [
+        articles[index].slug for index in [2, 0, 3, 1]
+    ]
+
+
+def test_feed_pages_return_expected_slices_without_duplicates_or_omissions(
+    client: TestClient,
+    feed_articles: tuple[list[Article], dict[str, str]],
+) -> None:
+    """피드를 페이지별로 조회하면 기대한 목록 구간을 반환하며, 모든 글이 순서대로 한 번씩 나온다."""
+    articles, tokens = feed_articles
+    expected_slugs = [articles[index].slug for index in [2, 0, 3, 1]]
+    for limit in [1, 2]:
+        combined = []
+        for offset in [*range(0, 4, limit), 4, 100]:
+            response = client.get(
+                "/api/articles/feed",
+                params={"limit": limit, "offset": offset},
+                headers={"Authorization": f"Token {tokens['viewer']}"},
+            )
+            assert response.status_code == 200
+            slugs = [item["slug"] for item in response.json()["articles"]]
+            assert slugs == expected_slugs[offset : offset + limit]
+            combined.extend(slugs)
+        assert combined == expected_slugs
+
+
+def test_feed_articles_count_returns_total_followed_author_article_count(
+    client: TestClient,
+    feed_articles: tuple[list[Article], dict[str, str]],
+) -> None:
+    """articlesCount는 조회자가 팔로우한 작성자들의 전체 게시글 수를 반환한다."""
+    _, tokens = feed_articles
+    for params in [
+        {},
+        {"limit": 1, "offset": 0},
+        {"limit": 2, "offset": 1},
+        {"limit": 1, "offset": 4},
+        {"limit": 1, "offset": 100},
+    ]:
+        response = client.get(
+            "/api/articles/feed",
+            params=params,
+            headers={"Authorization": f"Token {tokens['viewer']}"},
+        )
+        assert response.status_code == 200
+        assert response.json()["articlesCount"] == 4
+
+
+def test_feed_default_page_returns_twenty_articles_and_allows_larger_limits(
+    client: TestClient,
+    test_session_factory: sessionmaker[Session],
+) -> None:
+    """피드의 기본 페이지는 게시글 20개를 반환하며, limit을 늘리면 더 많이 조회할 수 있다."""
+    _store_articles(test_session_factory, [0] * 25)
+    token = _register(client, "viewer")
+    headers = {"Authorization": f"Token {token}"}
+    followed = client.post("/api/profiles/writer/follow", headers=headers)
+    assert followed.status_code == 200
+    default = client.get("/api/articles/feed", headers=headers)
+    larger = client.get("/api/articles/feed", params={"limit": 25}, headers=headers)
+    assert default.status_code == larger.status_code == 200
+    assert len(default.json()["articles"]) == 20
+    assert len(larger.json()["articles"]) == 25
+
+
+@pytest.mark.parametrize("follows_empty_author", [False, True])
+def test_feed_without_target_articles_returns_empty_results(
+    client: TestClient,
+    test_session_factory: sessionmaker[Session],
+    follows_empty_author: bool,
+) -> None:
+    """팔로우한 작성자의 게시글이 없으면 피드는 빈 목록과 articlesCount 0을 반환한다."""
+    _store_articles(test_session_factory, [0, 1])
+    token = _register(client, "viewer")
+    headers = {"Authorization": f"Token {token}"}
+    if follows_empty_author:
+        _register(client, "empty_author")
+        followed = client.post("/api/profiles/empty_author/follow", headers=headers)
+        assert followed.status_code == 200
+    response = client.get("/api/articles/feed", headers=headers)
+    assert response.status_code == 200
+    assert response.json() == {"articles": [], "articlesCount": 0}
+
+
+def test_follow_changes_update_feed_in_subsequent_requests(
+    client: TestClient,
+    test_session_factory: sessionmaker[Session],
+) -> None:
+    """팔로우하면 작성자의 기존 글이 다음 피드에 나오고, 해제하면 다음 피드에서 제외된다."""
+    articles = _store_articles(test_session_factory, [0, 1])
+    viewer_token = _register(client, "viewer")
+    other_token = _register(client, "other")
+    viewer_headers = {"Authorization": f"Token {viewer_token}"}
+    other_headers = {"Authorization": f"Token {other_token}"}
+    other_follow = client.post("/api/profiles/writer/follow", headers=other_headers)
+    assert other_follow.status_code == 200
+    initial = client.get("/api/articles/feed", headers=viewer_headers)
+    assert initial.status_code == 200
+    assert initial.json() == {"articles": [], "articlesCount": 0}
+    for method, expected_indices in [("POST", [1, 0]), ("DELETE", [])]:
+        changed = client.request(
+            method, "/api/profiles/writer/follow", headers=viewer_headers
+        )
+        assert changed.status_code == 200
+        response = client.get("/api/articles/feed", headers=viewer_headers)
+        assert response.status_code == 200
+        assert [item["slug"] for item in response.json()["articles"]] == [
+            articles[index].slug for index in expected_indices
+        ]
+        assert response.json()["articlesCount"] == len(expected_indices)
+    other_feed = client.get("/api/articles/feed", headers=other_headers)
+    assert other_feed.status_code == 200
+    assert [item["slug"] for item in other_feed.json()["articles"]] == [
+        articles[index].slug for index in [1, 0]
+    ]
+    assert other_feed.json()["articlesCount"] == 2
+
+
+def test_feed_shows_public_fields_and_viewer_relationships(
+    client: TestClient,
+    feed_articles: tuple[list[Article], dict[str, str]],
+) -> None:
+    """피드는 게시글 본문을 제외한 목록 응답 정보를 반환한다.
+
+    조회자의 작성자 팔로우·즐겨찾기 여부와 즐겨찾기한 사용자 수를 정확히 표시한다.
+    """
+    articles, tokens = feed_articles
+    response = client.get(
+        "/api/articles/feed", headers={"Authorization": f"Token {tokens['viewer']}"}
+    )
+    assert response.status_code == 200
+    assert response.json()["articles"] == [
+        _expected_item(
+            articles[2],
+            username="second_writer",
+            bio="Second writer bio",
+            image=None,
+            tags=["first"],
+            following=True,
+            favorites_count=1,
+        ),
+        _expected_item(
+            articles[0],
+            tags=["second", "first"],
+            following=True,
+            favorited=True,
+            favorites_count=2,
+        ),
+        _expected_item(
+            articles[3],
+            username="second_writer",
+            bio="Second writer bio",
+            image=None,
+            following=True,
+        ),
+        _expected_item(articles[1], following=True),
+    ]
+
+
+@pytest.mark.parametrize(
+    "authorization,message",
+    [
+        (None, "is missing"),
+        ("", "is missing"),
+        ("Token invalid", "is invalid"),
+        ("Bearer invalid", "is invalid"),
+    ],
+)
+def test_feed_requires_valid_authentication(
+    client: TestClient,
+    authorization: str | None,
+    message: str,
+) -> None:
+    """피드는 인증을 요구하며, 인증 헤더가 없거나 잘못되면 기존 token 오류와 함께 401을 반환한다."""
+    response = client.get(
+        "/api/articles/feed",
+        headers={"Authorization": authorization} if authorization is not None else {},
+    )
+    assert response.status_code == 401
+    assert response.json() == {"errors": {"token": [message]}}
+
+
+@pytest.mark.parametrize("path", ["/api/articles", "/api/articles/feed"])
 @pytest.mark.parametrize(
     "field,value",
     [
@@ -489,11 +754,15 @@ def test_article_list_rejects_invalid_authentication(
 )
 def test_invalid_pagination_returns_field_errors(
     client: TestClient,
+    path: str,
     field: str,
     value: str,
 ) -> None:
     """limit은 1 이상의 정수, offset은 0 이상의 정수여야 하며 잘못된 값은 해당 필드 오류로 반환한다."""
-    response = client.get("/api/articles", params={field: value})
+    headers = {}
+    if path == "/api/articles/feed":
+        headers = {"Authorization": f"Token {_register(client, 'viewer')}"}
+    response = client.get(path, params={field: value}, headers=headers)
     assert response.status_code == 422
     errors = response.json()["errors"]
     assert set(errors) == {field}

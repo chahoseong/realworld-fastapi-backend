@@ -4,7 +4,7 @@ from typing import Annotated
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Query, status
-from sqlalchemy import delete, func, select
+from sqlalchemy import Select, delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -26,7 +26,7 @@ from app.database import SessionDep
 from app.errors import ApiError
 from app.users.auth import CurrentUserDep, OptionalUserDep
 from app.users.follows import is_following
-from app.users.models import User
+from app.users.models import User, UserFollow
 
 router = APIRouter(prefix="/api", tags=["articles"])
 MAX_SLUG_ATTEMPTS = 3
@@ -75,6 +75,49 @@ def _article_tag_names(session: Session, article_id: int) -> list[str]:
             .order_by(ArticleTag.position)
         ).all()
     )
+
+
+def _article_list_response(
+    session: Session,
+    query: Select[tuple[Article]],
+    viewer: User | None,
+    limit: int,
+    offset: int,
+) -> ArticlesResponse:
+    total_count = session.scalar(select(func.count()).select_from(query.subquery()))
+    assert total_count is not None
+    articles = session.scalars(
+        query.order_by(Article.created_at.desc(), Article.id.desc())
+        .limit(limit)
+        .offset(offset)
+    ).all()
+    viewer_id = viewer.id if viewer else None
+    items: list[ArticleListItem] = []
+    for article in articles:
+        article_author = session.get(User, article.author_id)
+        assert article_author is not None
+        viewer_favorited, favorites_count = favorite_state(
+            session, viewer_id, article.id
+        )
+        items.append(
+            ArticleListItem(
+                slug=article.slug,
+                title=article.title,
+                description=article.description,
+                tagList=_article_tag_names(session, article.id),
+                createdAt=article.created_at,
+                updatedAt=article.updated_at,
+                favorited=viewer_favorited,
+                favoritesCount=favorites_count,
+                author=ArticleAuthor(
+                    username=article_author.username,
+                    bio=article_author.bio,
+                    image=article_author.image,
+                    following=is_following(session, viewer_id, article_author.id),
+                ),
+            )
+        )
+    return ArticlesResponse(articles=items, articlesCount=total_count)
 
 
 def _locked_tags(
@@ -214,40 +257,26 @@ def list_articles(
             .where(ArticleFavorite.article_id == Article.id, User.username == favorited)
             .exists()
         )
-    total_count = session.scalar(select(func.count()).select_from(query.subquery()))
-    assert total_count is not None
-    articles = session.scalars(
-        query.order_by(Article.created_at.desc(), Article.id.desc())
-        .limit(limit)
-        .offset(offset)
-    ).all()
-    viewer_id = viewer.id if viewer else None
-    items: list[ArticleListItem] = []
-    for article in articles:
-        article_author = session.get(User, article.author_id)
-        assert article_author is not None
-        viewer_favorited, favorites_count = favorite_state(
-            session, viewer_id, article.id
+    return _article_list_response(session, query, viewer, limit, offset)
+
+
+@router.get("/articles/feed")
+def get_article_feed(
+    current_user: CurrentUserDep,
+    session: SessionDep,
+    limit: Annotated[int, Query(ge=1)] = 20,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> ArticlesResponse:
+    viewer, _ = current_user
+    query = select(Article).where(
+        select(UserFollow.followed_id)
+        .where(
+            UserFollow.follower_id == viewer.id,
+            UserFollow.followed_id == Article.author_id,
         )
-        items.append(
-            ArticleListItem(
-                slug=article.slug,
-                title=article.title,
-                description=article.description,
-                tagList=_article_tag_names(session, article.id),
-                createdAt=article.created_at,
-                updatedAt=article.updated_at,
-                favorited=viewer_favorited,
-                favoritesCount=favorites_count,
-                author=ArticleAuthor(
-                    username=article_author.username,
-                    bio=article_author.bio,
-                    image=article_author.image,
-                    following=is_following(session, viewer_id, article_author.id),
-                ),
-            )
-        )
-    return ArticlesResponse(articles=items, articlesCount=total_count)
+        .exists()
+    )
+    return _article_list_response(session, query, viewer, limit, offset)
 
 
 @router.get("/articles/{slug}")
