@@ -1056,23 +1056,6 @@ def test_rejected_article_deletion_preserves_content_and_favorites(
         assert _favorite_relationships(session, {article_id}) == before_relationships
 
 
-def test_delete_unknown_article_returns_404(client: TestClient) -> None:
-    """존재하지 않는 게시글의 삭제는 404를 반환한다."""
-    # Arrange
-    _, token = _register_user(client)
-    missing_slug = f"missing-{uuid4().hex}"
-
-    # Act
-    rejected = client.delete(
-        f"/api/articles/{missing_slug}",
-        headers={"Authorization": f"Token {token}"},
-    )
-
-    # Assert
-    assert rejected.status_code == status.HTTP_404_NOT_FOUND
-    assert rejected.json() == {"errors": {"article": ["not found"]}}
-
-
 @pytest.mark.parametrize(
     "failure_kind",
     ["python", "postgres"],

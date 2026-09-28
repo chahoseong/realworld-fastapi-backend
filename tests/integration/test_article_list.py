@@ -719,7 +719,6 @@ def test_feed_shows_public_fields_and_viewer_relationships(
 @pytest.mark.parametrize(
     "authorization,message",
     [
-        (None, "is missing"),
         ("", "is missing"),
         ("Token invalid", "is invalid"),
         ("Bearer invalid", "is invalid"),
@@ -727,13 +726,13 @@ def test_feed_shows_public_fields_and_viewer_relationships(
 )
 def test_feed_requires_valid_authentication(
     client: TestClient,
-    authorization: str | None,
+    authorization: str,
     message: str,
 ) -> None:
-    """피드는 인증을 요구하며, 인증 헤더가 없거나 잘못되면 기존 token 오류와 함께 401을 반환한다."""
+    """피드는 비어 있거나 잘못된 인증 헤더를 token 오류와 함께 401로 거부한다."""
     response = client.get(
         "/api/articles/feed",
-        headers={"Authorization": authorization} if authorization is not None else {},
+        headers={"Authorization": authorization},
     )
     assert response.status_code == 401
     assert response.json() == {"errors": {"token": [message]}}

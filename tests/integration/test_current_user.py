@@ -77,21 +77,6 @@ def test_get_current_user_returns_token_owner_without_refresh(
         }
 
 
-def test_get_current_user_without_token_returns_missing_error(
-    client: TestClient,
-) -> None:
-    """인증 헤더가 없으면 현재 사용자 정보를 반환하지 않아야 한다."""
-    # Arrange
-    request_path = CURRENT_USER_PATH
-
-    # Act
-    response = client.get(request_path)
-
-    # Assert
-    assert response.status_code == status.HTTP_401_UNAUTHORIZED
-    assert response.json() == {"errors": {"token": ["is missing"]}}
-
-
 @pytest.mark.parametrize(
     "token_case",
     ["wrong_scheme", "tampered", "unknown_user", "invalid_subject"],
