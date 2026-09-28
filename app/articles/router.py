@@ -244,13 +244,14 @@ def update_article(
             article.updated_at = max(
                 datetime.now(UTC), article.updated_at + timedelta(microseconds=1)
             )
+            favorited, favorites_count = favorite_state(session, author.id, article.id)
             response = _article_response(
                 article,
                 author,
                 tag_names,
                 following=False,
-                favorited=False,
-                favorites_count=0,
+                favorited=favorited,
+                favorites_count=favorites_count,
             )
             session.commit()
             return response

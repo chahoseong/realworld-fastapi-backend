@@ -11,7 +11,8 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session, sessionmaker
 
-from app.articles.models import Article, ArticleTag, Tag
+from app.articles.models import Article, ArticleFavorite, ArticleTag, Tag
+from app.comments.models import Comment
 from app.users.models import User
 
 
@@ -79,6 +80,40 @@ def _counts(session: Session) -> tuple[int, int, int, int]:
     )
     assert all(count is not None for count in counts)
     return counts  # type: ignore[return-value]
+
+
+def _favorite_article(
+    client: TestClient, token: str, article: dict[str, object]
+) -> dict[str, object]:
+    response = client.post(
+        f"/api/articles/{article['slug']}/favorite",
+        headers={"Authorization": f"Token {token}"},
+    )
+    assert response.status_code == status.HTTP_200_OK
+    return cast(dict[str, object], response.json()["article"])
+
+
+def _favorite_relationships(
+    session: Session, article_ids: set[int]
+) -> set[tuple[int, int]]:
+    return {
+        (favorite.user_id, favorite.article_id)
+        for favorite in session.scalars(
+            select(ArticleFavorite).where(ArticleFavorite.article_id.in_(article_ids))
+        )
+    }
+
+
+def _create_comment(
+    client: TestClient, token: str, article: dict[str, object], body: str
+) -> dict[str, object]:
+    response = client.post(
+        f"/api/articles/{article['slug']}/comments",
+        headers={"Authorization": f"Token {token}"},
+        json={"comment": {"body": body}},
+    )
+    assert response.status_code == status.HTTP_201_CREATED
+    return cast(dict[str, object], response.json()["comment"])
 
 
 @pytest.fixture
@@ -386,24 +421,45 @@ def test_failed_article_creation_leaves_no_new_records_and_allows_retry(
     assert recovered["title"] == title
 
 
+@pytest.mark.parametrize("owner_favorited", [False, True])
 def test_update_article_changes_only_requested_body_and_preserves_tags(
     client: TestClient,
+    test_session_factory: sessionmaker[Session],
+    owner_favorited: bool,
 ) -> None:
     """본문만 수정하면 다른 내용과 태그·작성 시각을 보존하고 수정 시각을 갱신한다."""
     # Arrange
     _, token = _register_user(client)
     tags = [f"first-{uuid4().hex}", f"second-{uuid4().hex}"]
     created = _create_article(client, token, f"Partial {uuid4().hex}", tags)
+    _, other_token = _register_user(client)
+    _favorite_article(client, other_token, created)
+    if owner_favorited:
+        _favorite_article(client, token, created)
+    expected = created | {
+        "favorited": owner_favorited,
+        "favoritesCount": 2 if owner_favorited else 1,
+    }
+    with test_session_factory() as session:
+        stored = session.scalar(select(Article).where(Article.slug == created["slug"]))
+        assert stored is not None
+        article_id = stored.id
+        before_relationships = _favorite_relationships(session, {article_id})
 
     # Act
     updated = _update_article(
         client, token, cast(str, created["slug"]), {"body": "Updated body"}
     )
-    reread = client.get(f"/api/articles/{created['slug']}")
+    reread = client.get(
+        f"/api/articles/{created['slug']}",
+        headers={"Authorization": f"Token {token}"},
+    )
+    with test_session_factory() as session:
+        assert _favorite_relationships(session, {article_id}) == before_relationships
 
     # Assert
     assert updated == {
-        **created,
+        **expected,
         "body": "Updated body",
         "updatedAt": updated["updatedAt"],
     }
@@ -412,16 +468,29 @@ def test_update_article_changes_only_requested_body_and_preserves_tags(
     assert reread.json()["article"] == updated
 
 
+@pytest.mark.parametrize("owner_favorited", [False, True])
 def test_title_changes_preserve_public_id_and_previous_links(
     client: TestClient,
+    test_session_factory: sessionmaker[Session],
+    owner_favorited: bool,
 ) -> None:
-    """제목을 여러 번 바꿔도 UUID 접미부와 이전 주소의 최신 조회 결과가 유지된다."""
+    """제목을 여러 번 바꿔도 public id와 이전 주소의 최신 조회 결과가 유지된다."""
     # Arrange
     _, token = _register_user(client)
     created = _create_article(client, token, f"Original {uuid4().hex}")
     public_suffix = cast(str, created["slug"]).rsplit("-", 1)[-1]
     new_title = f"Changed {uuid4().hex}"
     final_title = f"Final {uuid4().hex}"
+    _, other_token = _register_user(client)
+    _favorite_article(client, other_token, created)
+    if owner_favorited:
+        _favorite_article(client, token, created)
+    expected_count = 2 if owner_favorited else 1
+    with test_session_factory() as session:
+        stored = session.scalar(select(Article).where(Article.slug == created["slug"]))
+        assert stored is not None
+        article_id = stored.id
+        before_relationships = _favorite_relationships(session, {article_id})
 
     # Act
     first_update = _update_article(
@@ -431,7 +500,7 @@ def test_title_changes_preserve_public_id_and_previous_links(
         client, token, cast(str, first_update["slug"]), {"title": final_title}
     )
     reads = [
-        client.get(f"/api/articles/{slug}")
+        client.get(f"/api/articles/{slug}", headers={"Authorization": f"Token {token}"})
         for slug in (created["slug"], first_update["slug"], final["slug"])
     ]
 
@@ -442,11 +511,18 @@ def test_title_changes_preserve_public_id_and_previous_links(
     assert final["updatedAt"] != created["updatedAt"]
     assert all(read.status_code == status.HTTP_200_OK for read in reads)
     assert all(read.json()["article"] == final for read in reads)
+    assert first_update["favorited"] is owner_favorited
+    assert final["favorited"] is owner_favorited
+    assert first_update["favoritesCount"] == final["favoritesCount"] == expected_count
     assert len(public_suffix) == 32
     assert all(
         cast(str, slug).rsplit("-", 1)[-1] == public_suffix
         for slug in (created["slug"], first_update["slug"], final["slug"])
     )
+    with test_session_factory() as session:
+        stored = session.get(Article, article_id)
+        assert stored is not None and stored.slug == final["slug"]
+        assert _favorite_relationships(session, {article_id}) == before_relationships
 
 
 def test_title_change_to_existing_title_keeps_articles_distinct(
@@ -648,13 +724,17 @@ def test_update_article_without_auth_returns_401_and_preserves_article(
     # Arrange
     _, token = _register_user(client)
     created = _create_article(client, token, f"Protected {uuid4().hex}")
+    created = _favorite_article(client, token, created)
 
     # Act
     rejected = client.put(
         f"/api/articles/{created['slug']}",
         json={"article": {"body": "Unauthorized change"}},
     )
-    reread = client.get(f"/api/articles/{created['slug']}")
+    reread = client.get(
+        f"/api/articles/{created['slug']}",
+        headers={"Authorization": f"Token {token}"},
+    )
 
     # Assert
     assert rejected.status_code == status.HTTP_401_UNAUTHORIZED
@@ -672,6 +752,7 @@ def test_update_article_by_other_user_returns_403_and_preserves_article(
     created = _create_article(
         client, owner_token, f"Owned {uuid4().hex}", [f"kept-{uuid4().hex}"]
     )
+    created = _favorite_article(client, owner_token, created)
 
     # Act
     rejected = client.put(
@@ -679,7 +760,10 @@ def test_update_article_by_other_user_returns_403_and_preserves_article(
         headers={"Authorization": f"Token {other_token}"},
         json={"article": {"title": "Stolen", "tagList": []}},
     )
-    reread = client.get(f"/api/articles/{created['slug']}")
+    reread = client.get(
+        f"/api/articles/{created['slug']}",
+        headers={"Authorization": f"Token {owner_token}"},
+    )
 
     # Assert
     assert rejected.status_code == status.HTTP_403_FORBIDDEN
@@ -702,6 +786,7 @@ def test_invalid_article_update_is_rejected_without_changing_article(
     created = _create_article(
         client, token, f"Valid {uuid4().hex}", [f"stable-{uuid4().hex}"]
     )
+    created = _favorite_article(client, token, created)
     changes: dict[str, object] = {
         "body": "Should not save",
         "description": "Should not save",
@@ -714,7 +799,10 @@ def test_invalid_article_update_is_rejected_without_changing_article(
         headers={"Authorization": f"Token {token}"},
         json={"article": changes},
     )
-    reread = client.get(f"/api/articles/{created['slug']}")
+    reread = client.get(
+        f"/api/articles/{created['slug']}",
+        headers={"Authorization": f"Token {token}"},
+    )
 
     # Assert
     assert rejected.status_code == status.HTTP_422_UNPROCESSABLE_CONTENT
@@ -734,7 +822,7 @@ def test_article_update_save_failure_restores_content_and_tags(
     monkeypatch: pytest.MonkeyPatch,
     failure_kind: str,
 ) -> None:
-    """Python 예외나 PostgreSQL 오류로 저장에 실패해도 글과 태그가 유지된다."""
+    """Python 예외나 PostgreSQL 오류로 수정 저장에 실패해도 글과 태그가 유지되며, 오류 제거 후 다시 수정할 수 있다."""
     # Arrange
     _, token = _register_user(server_error_client)
     old_tag = f"old-{uuid4().hex}"
@@ -742,6 +830,14 @@ def test_article_update_save_failure_restores_content_and_tags(
     created = _create_article(
         server_error_client, token, f"Before {uuid4().hex}", [old_tag]
     )
+    _, other_token = _register_user(server_error_client)
+    _favorite_article(server_error_client, other_token, created)
+    created = _favorite_article(server_error_client, token, created)
+    with test_session_factory() as session:
+        stored = session.scalar(select(Article).where(Article.slug == created["slug"]))
+        assert stored is not None
+        article_id = stored.id
+        before_relationships = _favorite_relationships(session, {article_id})
     postgres_error_seen = False
 
     def fail_after_flush(session: Session) -> None:
@@ -769,11 +865,15 @@ def test_article_update_save_failure_restores_content_and_tags(
                 }
             },
         )
-    reread = server_error_client.get(f"/api/articles/{created['slug']}")
+    reread = server_error_client.get(
+        f"/api/articles/{created['slug']}",
+        headers={"Authorization": f"Token {token}"},
+    )
     tags = server_error_client.get("/api/tags")
     with test_session_factory() as session:
         old_stored = session.scalar(select(Tag).where(Tag.name == old_tag))
         new_stored = session.scalar(select(Tag).where(Tag.name == new_tag))
+        assert _favorite_relationships(session, {article_id}) == before_relationships
 
     # Assert
     assert rejected.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
@@ -786,6 +886,14 @@ def test_article_update_save_failure_restores_content_and_tags(
     assert new_tag not in tags.json()["tags"]
     assert old_stored is not None
     assert new_stored is None
+
+    recovered = _update_article(
+        server_error_client, token, cast(str, created["slug"]), {"body": "Retry saved"}
+    )
+    assert recovered == created | {
+        "body": "Retry saved",
+        "updatedAt": recovered["updatedAt"],
+    }
 
 
 def test_deleting_renamed_article_invalidates_previous_and_current_links(
@@ -814,23 +922,38 @@ def test_deleting_renamed_article_invalidates_previous_and_current_links(
     assert current_read.status_code == status.HTTP_404_NOT_FOUND
 
 
-def test_deleting_articles_preserves_shared_tag_until_last_link_is_removed(
+def test_article_deletion_removes_own_relations_and_preserves_other_data(
     client: TestClient,
     test_session_factory: sessionmaker[Session],
 ) -> None:
-    """첫 글 삭제로 고유 태그만 사라지고 공유 태그는 두 번째 글 삭제까지 유지된다."""
+    """게시글 삭제로 고유 태그는 사라지고, 공유 태그는 마지막 연결이 삭제될 때까지 유지된다.
+
+    삭제한 글의 댓글·즐겨찾기도 함께 제거하며, 다른 게시글의 데이터와 사용자는 유지한다.
+    """
     # Arrange
-    _, token = _register_user(client)
+    owner_name, token = _register_user(client)
+    other_name, other_token = _register_user(client)
     shared = f"shared-{uuid4().hex}"
     exclusive = f"exclusive-{uuid4().hex}"
     first = _create_article(client, token, f"First {uuid4().hex}", [shared, exclusive])
     second = _create_article(client, token, f"Second {uuid4().hex}", [shared])
+    _favorite_article(client, token, first)
+    _favorite_article(client, other_token, first)
+    second = _favorite_article(client, other_token, second) | {"favorited": False}
+    removed_comment = _create_comment(client, other_token, first, "On removed article")
+    kept_comment = _create_comment(client, other_token, second, "On kept article")
     with test_session_factory() as session:
         stored_first = session.scalar(
             select(Article).where(Article.slug == first["slug"])
         )
         assert stored_first is not None
         first_id = stored_first.id
+        stored_second = session.scalar(
+            select(Article).where(Article.slug == second["slug"])
+        )
+        assert stored_second is not None
+        second_id = stored_second.id
+        kept_relationships = _favorite_relationships(session, {second_id})
 
     # Act
     first_deletion = client.delete(
@@ -840,11 +963,24 @@ def test_deleting_articles_preserves_shared_tag_until_last_link_is_removed(
     first_read = client.get(f"/api/articles/{first['slug']}")
     second_read = client.get(f"/api/articles/{second['slug']}")
     tags_after_first = client.get("/api/tags")
+    second_comments = client.get(f"/api/articles/{second['slug']}/comments")
     with test_session_factory() as session:
         removed_article = session.get(Article, first_id)
         removed_links = session.scalars(
             select(ArticleTag).where(ArticleTag.article_id == first_id)
         ).all()
+        assert (
+            _favorite_relationships(session, {first_id, second_id})
+            == kept_relationships
+        )
+        assert session.get(Comment, removed_comment["id"]) is None
+        assert session.get(Comment, kept_comment["id"]) is not None
+        assert (
+            session.scalar(select(User).where(User.username == owner_name)) is not None
+        )
+        assert (
+            session.scalar(select(User).where(User.username == other_name)) is not None
+        )
     second_deletion = client.delete(
         f"/api/articles/{second['slug']}",
         headers={"Authorization": f"Token {token}"},
@@ -856,6 +992,8 @@ def test_deleting_articles_preserves_shared_tag_until_last_link_is_removed(
     assert first_read.status_code == status.HTTP_404_NOT_FOUND
     assert second_read.status_code == status.HTTP_200_OK
     assert second_read.json()["article"] == second
+    assert second_comments.status_code == status.HTTP_200_OK
+    assert second_comments.json() == {"comments": [kept_comment]}
     assert tags_after_first.status_code == status.HTTP_200_OK
     assert exclusive not in tags_after_first.json()["tags"]
     assert shared in tags_after_first.json()["tags"]
@@ -864,32 +1002,58 @@ def test_deleting_articles_preserves_shared_tag_until_last_link_is_removed(
     assert second_deletion.status_code == status.HTTP_204_NO_CONTENT
     assert tags_after_second.status_code == status.HTTP_200_OK
     assert shared not in tags_after_second.json()["tags"]
+    with test_session_factory() as session:
+        assert _favorite_relationships(session, {first_id, second_id}) == set()
+        assert session.get(Comment, kept_comment["id"]) is None
 
 
-def test_delete_article_by_other_user_returns_403_and_preserves_article(
+@pytest.mark.parametrize(
+    "authenticated", [False, True], ids=["missing-auth", "other-user"]
+)
+def test_rejected_article_deletion_preserves_content_and_favorites(
     client: TestClient,
+    test_session_factory: sessionmaker[Session],
+    authenticated: bool,
 ) -> None:
-    """다른 사용자의 삭제는 거부되고 게시글과 태그가 유지된다."""
+    """인증이 없거나 작성자가 아닌 사용자의 삭제는 거부되고 기존 게시글과 관련 데이터가 유지된다."""
     # Arrange
     _, owner_token = _register_user(client)
     _, other_token = _register_user(client)
     tag = f"protected-{uuid4().hex}"
     article = _create_article(client, owner_token, f"Owned {uuid4().hex}", [tag])
+    _favorite_article(client, other_token, article)
+    article = _favorite_article(client, owner_token, article)
+    comment = _create_comment(client, other_token, article, "Protected comment")
+    with test_session_factory() as session:
+        stored = session.scalar(select(Article).where(Article.slug == article["slug"]))
+        assert stored is not None
+        article_id = stored.id
+        before_relationships = _favorite_relationships(session, {article_id})
 
     # Act
     rejected = client.delete(
         f"/api/articles/{article['slug']}",
-        headers={"Authorization": f"Token {other_token}"},
+        headers={"Authorization": f"Token {other_token}"} if authenticated else {},
     )
-    reread = client.get(f"/api/articles/{article['slug']}")
+    reread = client.get(
+        f"/api/articles/{article['slug']}",
+        headers={"Authorization": f"Token {owner_token}"},
+    )
+    comments = client.get(f"/api/articles/{article['slug']}/comments")
     tags = client.get("/api/tags")
 
     # Assert
-    assert rejected.status_code == status.HTTP_403_FORBIDDEN
+    assert rejected.status_code == (
+        status.HTTP_403_FORBIDDEN if authenticated else status.HTTP_401_UNAUTHORIZED
+    )
     assert reread.status_code == status.HTTP_200_OK
     assert reread.json()["article"] == article
     assert tags.status_code == status.HTTP_200_OK
     assert tag in tags.json()["tags"]
+    assert comments.status_code == status.HTTP_200_OK
+    assert comments.json() == {"comments": [comment]}
+    with test_session_factory() as session:
+        assert _favorite_relationships(session, {article_id}) == before_relationships
 
 
 def test_delete_unknown_article_returns_404(client: TestClient) -> None:
@@ -909,22 +1073,62 @@ def test_delete_unknown_article_returns_404(client: TestClient) -> None:
     assert rejected.json() == {"errors": {"article": ["not found"]}}
 
 
-def test_failed_article_deletion_preserves_article_and_tag_links(
+@pytest.mark.parametrize(
+    "failure_kind",
+    ["python", "postgres"],
+    ids=["python-exception-after-flush", "postgres-error-after-flush"],
+)
+def test_failed_article_deletion_restores_content_and_relations_and_allows_retry(
     server_error_client: TestClient,
     test_session_factory: sessionmaker[Session],
     monkeypatch: pytest.MonkeyPatch,
+    failure_kind: str,
 ) -> None:
-    """삭제 저장에 실패하면 게시글·태그·연결 관계가 모두 유지된다."""
+    """게시글 삭제 저장에 실패하면 삭제 전 게시글과 관련 데이터가 복구되고, 오류 제거 후 다시 삭제할 수 있다."""
     # Arrange
     _, token = _register_user(server_error_client)
     tag = f"rollback-{uuid4().hex}"
     article = _create_article(
         server_error_client, token, f"Preserved {uuid4().hex}", [tag]
     )
+    _, other_token = _register_user(server_error_client)
+    _favorite_article(server_error_client, other_token, article)
+    article = _favorite_article(server_error_client, token, article)
+    comment = _create_comment(server_error_client, other_token, article, "Keep me")
+    kept_article = _create_article(
+        server_error_client, other_token, f"Kept {uuid4().hex}"
+    )
+    kept_article = _favorite_article(server_error_client, token, kept_article) | {
+        "favorited": False
+    }
+    with test_session_factory() as session:
+        stored = session.scalar(select(Article).where(Article.slug == article["slug"]))
+        kept_stored = session.scalar(
+            select(Article).where(Article.slug == kept_article["slug"])
+        )
+        assert stored is not None and kept_stored is not None
+        article_id, kept_id = stored.id, kept_stored.id
+        before_relationships = _favorite_relationships(session, {article_id, kept_id})
+        kept_relationships = _favorite_relationships(session, {kept_id})
+    deletion_flushed = False
+    postgres_error_seen = False
 
     def fail_after_flush(session: Session) -> None:
+        nonlocal deletion_flushed, postgres_error_seen
         session.flush()
-        raise RuntimeError("simulated commit failure")
+        assert (
+            session.scalar(select(Article.id).where(Article.id == article_id)) is None
+        )
+        assert session.get(Comment, comment["id"]) is None
+        assert _favorite_relationships(session, {article_id}) == set()
+        deletion_flushed = True
+        if failure_kind == "python":
+            raise RuntimeError("simulated commit failure")
+        try:
+            session.execute(text("SELECT 1 / 0"))
+        except DBAPIError:
+            postgres_error_seen = True
+            raise
 
     # Act
     with monkeypatch.context() as patch:
@@ -933,7 +1137,12 @@ def test_failed_article_deletion_preserves_article_and_tag_links(
             f"/api/articles/{article['slug']}",
             headers={"Authorization": f"Token {token}"},
         )
-    reread = server_error_client.get(f"/api/articles/{article['slug']}")
+    reread = server_error_client.get(
+        f"/api/articles/{article['slug']}",
+        headers={"Authorization": f"Token {token}"},
+    )
+    comments = server_error_client.get(f"/api/articles/{article['slug']}/comments")
+    kept_read = server_error_client.get(f"/api/articles/{kept_article['slug']}")
     tags = server_error_client.get("/api/tags")
     with test_session_factory() as session:
         stored_article = session.scalar(
@@ -947,9 +1156,17 @@ def test_failed_article_deletion_preserves_article_and_tag_links(
             if stored_article is not None
             else None
         )
+        assert (
+            _favorite_relationships(session, {article_id, kept_id})
+            == before_relationships
+        )
+        assert session.get(Comment, comment["id"]) is not None
 
     # Assert
     assert rejected.status_code == status.HTTP_500_INTERNAL_SERVER_ERROR
+    assert deletion_flushed
+    if failure_kind == "postgres":
+        assert postgres_error_seen
     assert reread.status_code == status.HTTP_200_OK
     assert reread.json()["article"] == article
     assert tags.status_code == status.HTTP_200_OK
@@ -957,3 +1174,24 @@ def test_failed_article_deletion_preserves_article_and_tag_links(
     assert stored_article is not None
     assert stored_tag is not None
     assert stored_link is not None and stored_link.tag_id == stored_tag.id
+    assert comments.status_code == status.HTTP_200_OK
+    assert comments.json() == {"comments": [comment]}
+    assert kept_read.status_code == status.HTTP_200_OK
+    assert kept_read.json() == {"article": kept_article}
+
+    recovered = server_error_client.delete(
+        f"/api/articles/{article['slug']}",
+        headers={"Authorization": f"Token {token}"},
+    )
+    assert recovered.status_code == status.HTTP_204_NO_CONTENT
+    assert (
+        server_error_client.get(f"/api/articles/{article['slug']}").status_code
+        == status.HTTP_404_NOT_FOUND
+    )
+    with test_session_factory() as session:
+        assert session.get(Article, article_id) is None
+        assert session.get(Comment, comment["id"]) is None
+        assert (
+            _favorite_relationships(session, {article_id, kept_id})
+            == kept_relationships
+        )
