@@ -112,6 +112,54 @@ def _register(client: TestClient, username: str) -> str:
     return cast(str, response.json()["user"]["token"])
 
 
+@pytest.fixture
+def filter_articles(
+    client: TestClient,
+    test_session_factory: sessionmaker[Session],
+) -> tuple[list[Article], dict[str, str]]:
+    """필터별 일치 게시글과 복합 필터의 일부 조건에만 일치하는 게시글을 준비한다."""
+    articles = _store_articles(test_session_factory, list(range(8)))
+    tokens = {username: _register(client, username) for username in ["fan", "viewer"]}
+    with test_session_factory() as session:
+        writer = session.scalar(select(User).where(User.username == "writer"))
+        fan = session.scalar(select(User).where(User.username == "fan"))
+        viewer = session.scalar(select(User).where(User.username == "viewer"))
+        assert writer is not None and fan is not None and viewer is not None
+        other_writer = User(
+            username="other_writer",
+            email="other_writer@example.com",
+            password_hash="not-for-login",
+        )
+        topic = Tag(name="topic")
+        extra = Tag(name="extra")
+        session.add_all([other_writer, topic, extra])
+        session.flush()
+        session.add_all(articles[4:])
+        for article in articles[4:]:
+            article.author_id = other_writer.id
+        for index in [0, 1, 2, 4, 6]:
+            session.add(
+                ArticleTag(article_id=articles[index].id, tag_id=topic.id, position=0)
+            )
+        for index in [0, 3, 5, 7]:
+            session.add(
+                ArticleTag(
+                    article_id=articles[index].id,
+                    tag_id=extra.id,
+                    position=1 if index == 0 else 0,
+                )
+            )
+        for index in [0, 1, 3, 4, 5]:
+            session.add(ArticleFavorite(user_id=fan.id, article_id=articles[index].id))
+        for index in [0, 7]:
+            session.add(
+                ArticleFavorite(user_id=viewer.id, article_id=articles[index].id)
+            )
+        session.add(UserFollow(follower_id=viewer.id, followed_id=writer.id))
+        session.commit()
+    return articles, tokens
+
+
 def test_article_list_orders_by_creation_time_and_id_descending(
     client: TestClient,
     test_session_factory: sessionmaker[Session],
@@ -261,6 +309,159 @@ def test_article_list_shows_public_fields_and_viewer_relationships_without_dupli
                 favorites_count=2,
             ),
         ]
+
+
+@pytest.mark.parametrize(
+    "filters,expected_indices",
+    [
+        ({"tag": "topic"}, [6, 4, 2, 1, 0]),
+        ({"author": "writer"}, [3, 2, 1, 0]),
+        ({"author": "other_writer"}, [7, 6, 5, 4]),
+        ({"favorited": "fan"}, [5, 4, 3, 1, 0]),
+    ],
+)
+def test_article_filters_select_only_matching_articles(
+    client: TestClient,
+    filter_articles: tuple[list[Article], dict[str, str]],
+    filters: dict[str, str],
+    expected_indices: list[int],
+) -> None:
+    """지정한 태그가 있거나, 지정한 작성자가 썼거나, 지정한 사용자가 즐겨찾기한 글을 필터별로 조회한다."""
+    articles, _ = filter_articles
+    response = client.get("/api/articles", params=filters)
+    assert response.status_code == 200
+    items = response.json()["articles"]
+    assert [item["slug"] for item in items] == [
+        articles[index].slug for index in expected_indices
+    ]
+    if "tag" in filters:
+        assert items[-1]["tagList"] == ["topic", "extra"]
+
+
+@pytest.mark.parametrize(
+    "filters,expected_indices",
+    [
+        ({"tag": "topic", "author": "writer"}, [2, 1, 0]),
+        ({"tag": "topic", "favorited": "fan"}, [4, 1, 0]),
+        ({"author": "writer", "favorited": "fan"}, [3, 1, 0]),
+        ({"tag": "topic", "author": "writer", "favorited": "fan"}, [1, 0]),
+    ],
+)
+def test_combined_article_filters_require_every_condition(
+    client: TestClient,
+    filter_articles: tuple[list[Article], dict[str, str]],
+    filters: dict[str, str],
+    expected_indices: list[int],
+) -> None:
+    """필터를 함께 지정하면 모든 조건에 일치하는 게시글만 반환한다."""
+    articles, _ = filter_articles
+    response = client.get("/api/articles", params=filters)
+    assert response.status_code == 200
+    assert [item["slug"] for item in response.json()["articles"]] == [
+        articles[index].slug for index in expected_indices
+    ]
+
+
+@pytest.mark.parametrize(
+    "filters",
+    [
+        {"tag": "missing"},
+        {"author": "missing"},
+        {"favorited": "missing"},
+        {"tag": ""},
+        {"author": ""},
+        {"favorited": ""},
+        {"tag": "topic", "author": "other_writer", "favorited": "viewer"},
+    ],
+)
+def test_article_filters_without_matches_return_empty_results(
+    client: TestClient,
+    filter_articles: tuple[list[Article], dict[str, str]],
+    filters: dict[str, str],
+) -> None:
+    """필터 조건에 일치하는 게시글이 없으면 빈 목록과 전체 게시글 수 0을 반환한다."""
+    response = client.get("/api/articles", params=filters)
+    assert response.status_code == 200
+    assert response.json() == {"articles": [], "articlesCount": 0}
+
+
+@pytest.mark.parametrize(
+    "filters,expected_count",
+    [
+        ({"tag": "topic"}, 5),
+        ({"author": "writer"}, 4),
+        ({"favorited": "fan"}, 5),
+        ({"tag": "topic", "author": "writer", "favorited": "fan"}, 2),
+    ],
+)
+def test_articles_count_returns_total_filtered_article_count(
+    client: TestClient,
+    filter_articles: tuple[list[Article], dict[str, str]],
+    filters: dict[str, str],
+    expected_count: int,
+) -> None:
+    """articlesCount는 필터에 일치하는 전체 게시글 수를 반환한다."""
+    for pagination in [
+        {},
+        {"limit": 1, "offset": 0},
+        {"limit": 2, "offset": 1},
+        {"limit": 1, "offset": expected_count},
+        {"limit": 1, "offset": 100},
+    ]:
+        response = client.get("/api/articles", params={**filters, **pagination})
+        assert response.status_code == 200
+        assert response.json()["articlesCount"] == expected_count
+
+
+def test_filtered_article_pages_return_only_matching_slices(
+    client: TestClient,
+    filter_articles: tuple[list[Article], dict[str, str]],
+) -> None:
+    """필터에 일치하는 목록을 페이지로 나누며, 모든 페이지를 합치면 해당 글이 순서대로 한 번씩 나온다."""
+    articles, _ = filter_articles
+    filters = {"tag": "topic", "author": "writer", "favorited": "fan"}
+    expected_slugs = [articles[index].slug for index in [1, 0]]
+    combined = []
+    for offset in [0, 1, 2, 100]:
+        response = client.get(
+            "/api/articles", params={**filters, "limit": 1, "offset": offset}
+        )
+        assert response.status_code == 200
+        slugs = [item["slug"] for item in response.json()["articles"]]
+        assert slugs == expected_slugs[offset : offset + 1]
+        combined.extend(slugs)
+    assert combined == expected_slugs
+
+
+def test_favorited_filter_user_is_independent_of_viewer_state(
+    client: TestClient,
+    filter_articles: tuple[list[Article], dict[str, str]],
+) -> None:
+    """지정한 사용자의 즐겨찾기 목록을 조회해도, 팔로우·즐겨찾기 여부는 실제 조회자에 맞게 표시한다."""
+    articles, tokens = filter_articles
+    expected_indices = [5, 4, 3, 1, 0]
+    for token, favorites, follows in [
+        (tokens["fan"], [True] * 5, [False] * 5),
+        (
+            tokens["viewer"],
+            [False, False, False, False, True],
+            [False, False, True, True, True],
+        ),
+        (None, [False] * 5, [False] * 5),
+    ]:
+        response = client.get(
+            "/api/articles",
+            params={"favorited": "fan"},
+            headers={"Authorization": f"Token {token}"} if token else {},
+        )
+        assert response.status_code == 200
+        items = response.json()["articles"]
+        assert [item["slug"] for item in items] == [
+            articles[index].slug for index in expected_indices
+        ]
+        assert [item["favorited"] for item in items] == favorites
+        assert [item["author"]["following"] for item in items] == follows
+        assert [item["favoritesCount"] for item in items] == [1, 1, 1, 1, 2]
 
 
 @pytest.mark.parametrize("authorization", ["", "Token invalid", "Bearer invalid"])

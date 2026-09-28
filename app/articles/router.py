@@ -188,23 +188,47 @@ def create_article(
 def list_articles(
     viewer: OptionalUserDep,
     session: SessionDep,
+    tag: str | None = None,
+    author: str | None = None,
+    favorited: str | None = None,
     limit: Annotated[int, Query(ge=1)] = 20,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> ArticlesResponse:
-    total_count = session.scalar(select(func.count()).select_from(Article))
+    query = select(Article)
+    if tag is not None:
+        query = query.where(
+            select(ArticleTag.article_id)
+            .join(Tag, Tag.id == ArticleTag.tag_id)
+            .where(ArticleTag.article_id == Article.id, Tag.name == tag)
+            .exists()
+        )
+    if author is not None:
+        query = query.where(
+            Article.author_id
+            == select(User.id).where(User.username == author).scalar_subquery()
+        )
+    if favorited is not None:
+        query = query.where(
+            select(ArticleFavorite.article_id)
+            .join(User, User.id == ArticleFavorite.user_id)
+            .where(ArticleFavorite.article_id == Article.id, User.username == favorited)
+            .exists()
+        )
+    total_count = session.scalar(select(func.count()).select_from(query.subquery()))
     assert total_count is not None
     articles = session.scalars(
-        select(Article)
-        .order_by(Article.created_at.desc(), Article.id.desc())
+        query.order_by(Article.created_at.desc(), Article.id.desc())
         .limit(limit)
         .offset(offset)
     ).all()
     viewer_id = viewer.id if viewer else None
     items: list[ArticleListItem] = []
     for article in articles:
-        author = session.get(User, article.author_id)
-        assert author is not None
-        favorited, favorites_count = favorite_state(session, viewer_id, article.id)
+        article_author = session.get(User, article.author_id)
+        assert article_author is not None
+        viewer_favorited, favorites_count = favorite_state(
+            session, viewer_id, article.id
+        )
         items.append(
             ArticleListItem(
                 slug=article.slug,
@@ -213,13 +237,13 @@ def list_articles(
                 tagList=_article_tag_names(session, article.id),
                 createdAt=article.created_at,
                 updatedAt=article.updated_at,
-                favorited=favorited,
+                favorited=viewer_favorited,
                 favoritesCount=favorites_count,
                 author=ArticleAuthor(
-                    username=author.username,
-                    bio=author.bio,
-                    image=author.image,
-                    following=is_following(session, viewer_id, author.id),
+                    username=article_author.username,
+                    bio=article_author.bio,
+                    image=article_author.image,
+                    following=is_following(session, viewer_id, article_author.id),
                 ),
             )
         )
