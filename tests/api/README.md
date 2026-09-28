@@ -36,7 +36,7 @@ The following examples use PowerShell.
 ### Run a file or directory
 
 ```powershell
-hurl --test --jobs 1 `
+hurl --test --jobs 1 --no-cookie-store `
   --variable "host=<api-origin>" `
   --variable "uid=<fresh-unique-value>" `
   "<hurl-file-or-directory>"
@@ -47,7 +47,7 @@ Use `tests/api/hurl` as the target to run all local Hurl files.
 ### Run through a specific entry
 
 ```powershell
-hurl --test --jobs 1 `
+hurl --test --jobs 1 --no-cookie-store `
   --variable "host=<api-origin>" `
   --variable "uid=<fresh-unique-value>" `
   --to-entry "<last-entry-number>" `
@@ -59,7 +59,7 @@ This runs the selected file from its first entry through the specified entry. Us
 ### Diagnose all reachable failures
 
 ```powershell
-hurl --test --jobs 1 --continue-on-error `
+hurl --test --jobs 1 --no-cookie-store --continue-on-error `
   --variable "host=<api-origin>" `
   --variable "uid=<fresh-unique-value>" `
   "<hurl-file-or-directory>"
@@ -71,5 +71,6 @@ hurl --test --jobs 1 --continue-on-error `
 - Use a new `uid` for every complete test run.
 - Entries in the same file must use the same `uid`.
 - Preserve request order and use `--jobs 1` unless the selected files are known to be independent.
+- Use `--no-cookie-store` to prevent response cookies from being stored and automatically reused in later requests.
 - Do not modify upstream requests or assertions to make the implementation pass.
 - Use `--continue-on-error` only for diagnosis. A run containing assertion failures is not a passing contract result.
