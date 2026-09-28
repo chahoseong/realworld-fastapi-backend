@@ -66,5 +66,22 @@ class ArticleResponse(BaseModel):
     article: ArticlePayload
 
 
+class ArticleListItem(BaseModel):
+    slug: str
+    title: str
+    description: str
+    tagList: list[str]
+    createdAt: datetime
+    updatedAt: datetime
+    favorited: bool
+    favoritesCount: int
+    author: ArticleAuthor
+
+
+class ArticlesResponse(BaseModel):
+    articles: list[ArticleListItem]
+    articlesCount: int
+
+
 class TagsResponse(BaseModel):
     tags: list[str]

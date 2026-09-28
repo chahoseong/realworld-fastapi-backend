@@ -1,9 +1,10 @@
 import re
 from datetime import UTC, datetime, timedelta
+from typing import Annotated
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, status
-from sqlalchemy import delete, select
+from fastapi import APIRouter, Query, status
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -13,8 +14,10 @@ from app.articles.lookup import find_article_by_public_slug
 from app.articles.models import Article, ArticleFavorite, ArticleTag, Tag
 from app.articles.schemas import (
     ArticleAuthor,
+    ArticleListItem,
     ArticlePayload,
     ArticleResponse,
+    ArticlesResponse,
     NewArticleRequest,
     TagsResponse,
     UpdateArticleRequest,
@@ -179,6 +182,48 @@ def create_article(
             raise
 
     raise AssertionError("unreachable")
+
+
+@router.get("/articles")
+def list_articles(
+    viewer: OptionalUserDep,
+    session: SessionDep,
+    limit: Annotated[int, Query(ge=1)] = 20,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> ArticlesResponse:
+    total_count = session.scalar(select(func.count()).select_from(Article))
+    assert total_count is not None
+    articles = session.scalars(
+        select(Article)
+        .order_by(Article.created_at.desc(), Article.id.desc())
+        .limit(limit)
+        .offset(offset)
+    ).all()
+    viewer_id = viewer.id if viewer else None
+    items: list[ArticleListItem] = []
+    for article in articles:
+        author = session.get(User, article.author_id)
+        assert author is not None
+        favorited, favorites_count = favorite_state(session, viewer_id, article.id)
+        items.append(
+            ArticleListItem(
+                slug=article.slug,
+                title=article.title,
+                description=article.description,
+                tagList=_article_tag_names(session, article.id),
+                createdAt=article.created_at,
+                updatedAt=article.updated_at,
+                favorited=favorited,
+                favoritesCount=favorites_count,
+                author=ArticleAuthor(
+                    username=author.username,
+                    bio=author.bio,
+                    image=author.image,
+                    following=is_following(session, viewer_id, author.id),
+                ),
+            )
+        )
+    return ArticlesResponse(articles=items, articlesCount=total_count)
 
 
 @router.get("/articles/{slug}")
