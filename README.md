@@ -69,6 +69,10 @@ uv run fastapi dev
   docker compose stop db
   ```
 
+## Deployment
+
+See the [Render deployment example](docs/deployment/render.md) for the settings and steps used to deploy this project.
+
 # Testing
 
 ## Integration tests
