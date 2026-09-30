@@ -1,6 +1,6 @@
-# Read World
+<img src="fastapi-logo.png" alt="logo">
 
-> ### A FastAPI backend implementation of the [RealWorld](https://github.com/gothinkster/realworld) API.
+> ### A FastAPI backend implementation of the [RealWorld](https://github.com/gothinkster/realworld) spec and API.
 
 It supports JWT authentication, profiles, articles and comments, follows and favorites, article filtering and pagination, and personalized feeds.
 
@@ -68,6 +68,10 @@ uv run fastapi dev
   ```bash
   docker compose stop db
   ```
+
+## Frontend
+
+The [Vue RealWorld example app](https://github.com/realworld-apps/vue-realworld-example-app) was used to check this backend in a browser.
 
 # Deployment
 
