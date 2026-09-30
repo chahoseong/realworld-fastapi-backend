@@ -1,16 +1,16 @@
-> ### [YOUR_FRAMEWORK] codebase containing real world examples (CRUD, auth, advanced patterns, etc) that adheres to the [RealWorld](https://github.com/gothinkster/realworld) spec and API.
+# Read World
 
-### [Demo](https://demo.realworld.build/)&nbsp;&nbsp;&nbsp;&nbsp;[RealWorld](https://github.com/gothinkster/realworld)
+> ### A FastAPI backend implementation of the [RealWorld](https://github.com/gothinkster/realworld) API.
 
-This codebase was created to demonstrate a fully fledged fullstack application built with **[YOUR_FRAMEWORK]** including CRUD operations, authentication, routing, pagination, and more.
-
-We've gone to great lengths to adhere to the **[YOUR_FRAMEWORK]** community styleguides & best practices.
-
-For more information on how to this works with other frontends/backends, head over to the [RealWorld](https://github.com/gothinkster/realworld) repo.
+It supports JWT authentication, profiles, articles and comments, follows and favorites, article filtering and pagination, and personalized feeds.
 
 # How it works
 
-> Describe the general architecture of your app here
+![Backend architecture overview](docs/architecture/backend-architecture-overview.svg)
+
+- [Tack Stack](docs/architecture/tech-stack.md)
+- [Data Model](docs/architecture/data-model.md)
+- [Flows](docs/architecture/flows)
 
 # Getting started
 
@@ -69,11 +69,17 @@ uv run fastapi dev
   docker compose stop db
   ```
 
-## Deployment
+# Deployment
 
 See the [Render deployment example](docs/deployment/render.md) for the settings and steps used to deploy this project.
 
 # Testing
+
+## Unit tests
+
+```bash
+uv run pytest tests/unit/
+```
 
 ## Integration tests
 
